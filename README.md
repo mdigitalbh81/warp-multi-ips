@@ -1,10 +1,16 @@
 # Cloudflare WARP
 
-[![Build, Test & Push](https://img.shields.io/github/actions/workflow/status/ErcinDedeoglu/cloudflare-warp/build-test-push.yml?branch=v1.0&logo=github&label=Build)](https://github.com/ErcinDedeoglu/cloudflare-warp/actions/workflows/build-test-push.yml)
-[![Docker Pulls](https://img.shields.io/docker/pulls/dublok/cloudflare-warp?logo=docker&label=Pulls)](https://hub.docker.com/r/dublok/cloudflare-warp)
-[![Docker Image Size](https://img.shields.io/docker/image-size/dublok/cloudflare-warp/latest?logo=docker&label=Size)](https://hub.docker.com/r/dublok/cloudflare-warp)
-[![GitHub Stars](https://img.shields.io/github/stars/ErcinDedeoglu/cloudflare-warp?logo=github&label=Stars)](https://github.com/ErcinDedeoglu/cloudflare-warp)
-[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-blue.svg)](https://github.com/ErcinDedeoglu/cloudflare-warp/blob/v1.0/LICENSE)
+[![Build](https://img.shields.io/github/actions/workflow/status/mdigitalbh81/warp-multi-ips/build-test-push.yml?logo=github&label=Build)](https://github.com/mdigitalbh81/warp-multi-ips/actions)
+[![GitHub Stars](https://img.shields.io/github/stars/mdigitalbh81/warp-multi-ips?logo=github&label=Stars)](https://github.com/mdigitalbh81/warp-multi-ips)
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-blue.svg)](LICENSE)
+
+## Attribution
+
+This project is derived from [https://github.com/ErcinDedeoglu/cloudflare-warp](https://github.com/ErcinDedeoglu/cloudflare-warp).
+
+Original project by Ercin Dedeoglu and contributors. This fork adds dedicated per-instance proxy ports while preserving the original CC BY-NC 4.0 license. Non-commercial use only.
+
+Upstream project: [ErcinDedeoglu/cloudflare-warp](https://github.com/ErcinDedeoglu/cloudflare-warp). The upstream Docker image `dublok/cloudflare-warp:latest` belongs to the original project and may not include the changes from this fork.
 
 Run [Cloudflare WARP](https://1.1.1.1/) in Docker. Provides SOCKS5 and HTTP proxies that route traffic through Cloudflare's network. Supports multiple WARP instances in a single container for IP rotation.
 
@@ -13,7 +19,8 @@ Run [Cloudflare WARP](https://1.1.1.1/) in Docker. Provides SOCKS5 and HTTP prox
 ```yaml
 services:
   warp:
-    image: dublok/cloudflare-warp:latest
+    build:
+      context: .
     container_name: warp
     restart: always
     ports:
@@ -62,7 +69,8 @@ If working, you'll see `warp=on` in the output.
 ```yaml
 services:
   warp:
-    image: dublok/cloudflare-warp:latest
+    build:
+      context: .
     ports:
       - "1080:1080"  # SOCKS5 proxy
       - "8080:8080"  # HTTP proxy
@@ -98,7 +106,8 @@ Direct proxies are always available that exit through Docker's network without r
 ```yaml
 services:
   warp:
-    image: dublok/cloudflare-warp:latest
+    build:
+      context: .
     ports:
       - "1080:1080"  # SOCKS5 WARP proxy
       - "1081:1081"  # SOCKS5 Direct proxy
@@ -146,7 +155,8 @@ Set `PROXY_MODE=dedicated` to expose each WARP instance on its own SOCKS5 port. 
 ```yaml
 services:
   warp:
-    image: dublok/cloudflare-warp:latest
+    build:
+      context: .
     ports:
       - "2080-2082:2080-2082"   # dedicated SOCKS5 ports
       # - "1081:1081"           # direct proxy (always available)
@@ -227,7 +237,8 @@ Connect your mobile devices using Shadowsocks apps - works as a system-wide VPN 
 ```yaml
 services:
   warp:
-    image: dublok/cloudflare-warp:latest
+    build:
+      context: .
     ports:
       - "8388:8388"  # Shadowsocks WARP (Cloudflare IP)
       - "8389:8389"  # Shadowsocks Direct (real IP)
