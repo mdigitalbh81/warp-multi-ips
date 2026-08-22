@@ -14,3 +14,7 @@ Thumbs.db
 
 # Build artifacts
 *.tar.gz
+
+# Python cache
+__pycache__/
+*.py[cod]

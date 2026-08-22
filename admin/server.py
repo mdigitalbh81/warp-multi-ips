@@ -561,6 +561,10 @@ def stop_instance(index):
             os.kill(int(pid_file.read_text().strip()), signal.SIGTERM)
         except (ProcessLookupError, ValueError):
             pass
+        try:
+            pid_file.unlink()
+        except FileNotFoundError:
+            pass
     subprocess.run(["pkill", "-f", f"STATE_DIRECTORY=.*instance-{index}"], capture_output=True)
 
 
