@@ -1,4 +1,4 @@
-# Cloudflare WARP
+# WARP Multi IPs
 
 [![Build](https://img.shields.io/github/actions/workflow/status/mdigitalbh81/warp-multi-ips/build-test-push.yml?logo=github&label=Build)](https://github.com/mdigitalbh81/warp-multi-ips/actions)
 [![GitHub Stars](https://img.shields.io/github/stars/mdigitalbh81/warp-multi-ips?logo=github&label=Stars)](https://github.com/mdigitalbh81/warp-multi-ips)
