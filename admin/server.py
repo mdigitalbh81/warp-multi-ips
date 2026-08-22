@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 DATA_DIR = Path(os.environ.get("WARP_DATA_DIR", "/var/lib/cloudflare-warp"))
 CONFIG_FILE = Path(os.environ.get("ADMIN_CONFIG_FILE", DATA_DIR / "admin-config.json"))
@@ -357,9 +357,17 @@ def instance_process_alive(index):
     return result.returncode == 0
 
 
-def trace_for_proxy(port):
+def proxy_url(port, cfg):
+    if cfg.get("proxy_auth_enabled") and cfg.get("proxy_user") and cfg.get("proxy_password"):
+        username = quote(str(cfg["proxy_user"]), safe="")
+        password = quote(str(cfg["proxy_password"]), safe="")
+        return f"socks5h://{username}:{password}@127.0.0.1:{port}"
+    return f"socks5h://127.0.0.1:{port}"
+
+
+def trace_for_proxy(port, cfg):
     result = subprocess.run(
-        ["curl", "-fsS", "--max-time", "20", "--proxy", f"socks5h://127.0.0.1:{port}", TRACE_URL],
+        ["curl", "-fsS", "--max-time", "20", "--proxy", proxy_url(port, cfg), TRACE_URL],
         text=True,
         capture_output=True,
     )
@@ -392,7 +400,7 @@ def refresh_instance(index, cfg):
         "error": None,
     }
     try:
-        trace = trace_for_proxy(proxy_port)
+        trace = trace_for_proxy(proxy_port, cfg)
         item["egress_ip"] = trace.get("ip")
         item["warp"] = trace.get("warp") in ("on", "plus")
         item["colo"] = trace.get("colo")
@@ -406,7 +414,7 @@ def refresh_instance(index, cfg):
 
 
 def refresh_all(force=False):
-    cfg = get_config(False)
+    cfg = get_config(True)
     with REFRESH_LOCK:
         if not force and STATE["last_refresh_started"]:
             age = time.time() - STATE["last_refresh_started"]
@@ -683,6 +691,8 @@ def parse_basic_auth(header):
         return None, None
     try:
         raw = base64.b64decode(header.split(" ", 1)[1]).decode()
+        if ":" not in raw:
+            return None, None
         return raw.split(":", 1)
     except Exception:
         return None, None
