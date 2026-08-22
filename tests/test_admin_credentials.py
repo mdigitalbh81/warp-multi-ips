@@ -119,8 +119,12 @@ class AdminCredentialTests(unittest.TestCase):
         config_json = json.dumps(self.server.public_config())
         account_json = json.dumps(self.server.public_admin_account())
         self.assertNotIn("Str0ng!Passw0rd", config_json)
+        self.assertNotIn("ADMIN_PASSWORD", config_json)
+        self.assertNotIn('"proxy_password"', config_json)
         self.assertNotIn("password_hash", config_json)
         self.assertNotIn("password_hash", account_json)
+        self.assertNotIn("salt", config_json)
+        self.assertNotIn("salt", account_json)
 
     def test_no_password_in_response(self):
         response, status = self.server.update_admin_credentials({
@@ -131,6 +135,31 @@ class AdminCredentialTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertNotIn("N3w!PasswordLong", json.dumps(response))
         self.assertNotIn("password_hash", json.dumps(response))
+
+    def test_auth_rate_limit_blocks_and_unblocks_ip(self):
+        self.server.ADMIN_AUTH_MAX_FAILURES = 2
+        self.server.ADMIN_AUTH_WINDOW_SECONDS = 60
+        self.server.ADMIN_AUTH_BLOCK_SECONDS = 10
+        self.server.AUTH_FAILURES.clear()
+
+        self.assertEqual(self.server.auth_retry_after("198.51.100.10", now=100), 0)
+        self.assertEqual(self.server.record_auth_failure("198.51.100.10", now=100), 0)
+        retry_after = self.server.record_auth_failure("198.51.100.10", now=101)
+        self.assertGreater(retry_after, 0)
+        self.assertGreater(self.server.auth_retry_after("198.51.100.10", now=102), 0)
+        self.assertEqual(self.server.auth_retry_after("198.51.100.10", now=112), 0)
+
+    def test_auth_rate_limit_map_is_bounded(self):
+        self.server.ADMIN_AUTH_MAX_FAILURES = 2
+        self.server.ADMIN_AUTH_WINDOW_SECONDS = 60
+        self.server.ADMIN_AUTH_BLOCK_SECONDS = 10
+        self.server.ADMIN_AUTH_MAX_IPS = 3
+        self.server.AUTH_FAILURES.clear()
+
+        for idx in range(6):
+            self.server.record_auth_failure(f"198.51.100.{idx}", now=100 + idx)
+
+        self.assertLessEqual(len(self.server.AUTH_FAILURES), 3)
 
     def test_missing_initial_credentials(self):
         with tempfile.TemporaryDirectory() as tmp:

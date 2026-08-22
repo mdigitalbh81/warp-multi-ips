@@ -32,10 +32,32 @@ COMMON_SH = "/warp-common.sh"
 MAX_INSTANCES = int(os.environ.get("ADMIN_MAX_INSTANCES", "200"))
 INITIAL_ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 INITIAL_ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+ADMIN_AUTH_MAX_FAILURES = int(os.environ.get("ADMIN_AUTH_MAX_FAILURES", "5"))
+ADMIN_AUTH_WINDOW_SECONDS = int(os.environ.get("ADMIN_AUTH_WINDOW_SECONDS", "300"))
+ADMIN_AUTH_BLOCK_SECONDS = int(os.environ.get("ADMIN_AUTH_BLOCK_SECONDS", "600"))
+ADMIN_AUTH_MAX_IPS = int(os.environ.get("ADMIN_AUTH_MAX_IPS", "2048"))
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'"
+    ),
+}
 
 CONFIG_LOCK = threading.RLock()
 CREDENTIALS_LOCK = threading.RLock()
 REFRESH_LOCK = threading.RLock()
+AUTH_RATE_LOCK = threading.RLock()
+AUTH_FAILURES = {}
 STATE = {
     "egress": {},
     "operation": None,
@@ -178,6 +200,57 @@ def authenticate_admin(username, password):
         and username == stored.get("username")
         and verify_password(password, stored.get("password_hash", ""))
     )
+
+
+def cleanup_auth_failures(now=None):
+    now = now or time.time()
+    cutoff = now - ADMIN_AUTH_WINDOW_SECONDS
+    with AUTH_RATE_LOCK:
+        for ip in list(AUTH_FAILURES):
+            record = AUTH_FAILURES[ip]
+            record["failures"] = [ts for ts in record.get("failures", []) if ts >= cutoff]
+            if not record["failures"] and record.get("blocked_until", 0) <= now:
+                AUTH_FAILURES.pop(ip, None)
+
+        if len(AUTH_FAILURES) <= ADMIN_AUTH_MAX_IPS:
+            return
+        for ip, _record in sorted(AUTH_FAILURES.items(), key=lambda item: item[1].get("last_seen", 0)):
+            if len(AUTH_FAILURES) <= ADMIN_AUTH_MAX_IPS:
+                break
+            AUTH_FAILURES.pop(ip, None)
+
+
+def auth_retry_after(ip, now=None):
+    now = now or time.time()
+    with AUTH_RATE_LOCK:
+        record = AUTH_FAILURES.get(ip)
+        if not record:
+            return 0
+        blocked_until = record.get("blocked_until", 0)
+        if blocked_until <= now:
+            return 0
+        return max(1, int(blocked_until - now))
+
+
+def record_auth_failure(ip, now=None):
+    now = now or time.time()
+    cleanup_auth_failures(now)
+    cutoff = now - ADMIN_AUTH_WINDOW_SECONDS
+    with AUTH_RATE_LOCK:
+        record = AUTH_FAILURES.setdefault(ip, {"failures": [], "blocked_until": 0, "last_seen": now})
+        record["last_seen"] = now
+        record["failures"] = [ts for ts in record.get("failures", []) if ts >= cutoff]
+        record["failures"].append(now)
+        if len(record["failures"]) >= ADMIN_AUTH_MAX_FAILURES:
+            record["blocked_until"] = now + ADMIN_AUTH_BLOCK_SECONDS
+        retry_after = auth_retry_after(ip, now)
+    cleanup_auth_failures(now)
+    return retry_after
+
+
+def clear_auth_failures(ip):
+    with AUTH_RATE_LOCK:
+        AUTH_FAILURES.pop(ip, None)
 
 
 def public_admin_account():
@@ -701,29 +774,58 @@ def parse_basic_auth(header):
 class Handler(SimpleHTTPRequestHandler):
     server_version = "WarpAdmin/1.0"
 
+    def end_headers(self):
+        for header, value in SECURITY_HEADERS.items():
+            self.send_header(header, value)
+        super().end_headers()
+
     def translate_path(self, path):
         parsed = urlparse(path)
         rel = parsed.path.lstrip("/") or "index.html"
         return str(STATIC_DIR / rel)
+
+    def client_ip(self):
+        return self.client_address[0] if self.client_address else "unknown"
 
     def require_auth(self):
         ok, error = ensure_admin_credentials()
         if not ok:
             self.send_json({"error": error}, 503)
             return False
+        ip = self.client_ip()
+        retry_after = auth_retry_after(ip)
+        if retry_after:
+            self.send_json(
+                {"error": "too many authentication failures; try again later"},
+                429,
+                {"Retry-After": str(retry_after)},
+            )
+            return False
         got_user, got_password = parse_basic_auth(self.headers.get("Authorization", ""))
         if authenticate_admin(got_user, got_password):
+            clear_auth_failures(ip)
             return True
+        if self.headers.get("Authorization"):
+            retry_after = record_auth_failure(ip)
+            if retry_after:
+                self.send_json(
+                    {"error": "too many authentication failures; try again later"},
+                    429,
+                    {"Retry-After": str(retry_after)},
+                )
+                return False
         self.send_response(401)
         self.send_header("WWW-Authenticate", 'Basic realm="WARP Admin"')
         self.end_headers()
         return False
 
-    def send_json(self, data, status=200):
+    def send_json(self, data, status=200, headers=None):
         body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        for header, value in (headers or {}).items():
+            self.send_header(header, value)
         self.end_headers()
         self.wfile.write(body)
 

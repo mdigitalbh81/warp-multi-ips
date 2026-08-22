@@ -260,6 +260,14 @@ The panel does not edit container environment variables at runtime. Increasing i
 
 The panel uses HTTP Basic Authentication. After changing credentials, the old password is rejected immediately by the backend. Some browsers cache Basic Authentication credentials until the tab/browser is closed or a new login challenge is forced; that cache does not mean the old password remains valid on the server.
 
+Security notes before publishing the admin panel:
+
+- Do not publish the admin panel directly over plain HTTP. Use HTTPS through a reverse proxy.
+- Prefer an additional access layer such as an IP allowlist, VPN, or Cloudflare Access.
+- Exposing `ADMIN_PORT` directly to the Internet is not recommended.
+- The panel applies temporary per-IP rate limiting to failed administrator authentication attempts and returns `429` while an IP is blocked.
+- API responses intentionally omit administrator secrets and proxy passwords. Runtime config files may still contain secrets that the services need in order to run.
+
 Admin API:
 
 ```text
