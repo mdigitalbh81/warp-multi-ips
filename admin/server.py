@@ -313,6 +313,7 @@ def read_env_file():
 def base_config():
     env = read_env_file()
     return {
+        "proxy_host": env.get("PROXY_HOST") or os.environ.get("PROXY_HOST", ""),
         "instances": int(env.get("WARP_INSTANCES") or os.environ.get("WARP_INSTANCES", "1")),
         "proxy_mode": env.get("PROXY_MODE") or os.environ.get("PROXY_MODE", "round-robin"),
         "proxy_base_port": int(env.get("PROXY_BASE_PORT") or os.environ.get("PROXY_BASE_PORT", "2080")),
@@ -335,6 +336,7 @@ def get_config(include_secret=False):
     cfg["warp_connect_timeout"] = int(cfg.get("warp_connect_timeout", 30))
     cfg["auto_refresh_interval"] = int(cfg.get("auto_refresh_interval", 60))
     cfg["proxy_auth_enabled"] = bool(cfg.get("proxy_auth_enabled", False))
+    cfg["proxy_host"] = cfg.get("proxy_host") or ""
     cfg["proxy_user"] = cfg.get("proxy_user") or ""
     if include_secret:
         cfg["proxy_password"] = cfg.get("proxy_password") or ""
@@ -412,6 +414,32 @@ def port_open(port):
         return sock.connect_ex(("127.0.0.1", int(port))) == 0
 
 
+def get_container_ips():
+    """Return all non-loopback IPv4 addresses detected on this container."""
+    ips = []
+    try:
+        result = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show"],
+            text=True,
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                for i, part in enumerate(parts):
+                    if part == "inet" and i + 1 < len(parts):
+                        addr = parts[i + 1].split("/")[0]
+                        if addr != "127.0.0.1":
+                            ips.append(addr)
+    except Exception:
+        pass
+    return ips
+
+
+_CONTAINER_IPS_CACHE = {"ips": [], "ts": 0}
+
+
 def pid_alive(pid):
     try:
         os.kill(int(pid), 0)
@@ -456,6 +484,13 @@ def trace_for_proxy(port, cfg):
 
 def refresh_instance(index, cfg):
     proxy_port = cfg["proxy_base_port"] + index if cfg["proxy_mode"] == "dedicated" else 1080
+    proxy_host = cfg.get("proxy_host") or ""
+    proxy_address = f"{proxy_host}:{proxy_port}" if proxy_host else ""
+    now = time.time()
+    if now - _CONTAINER_IPS_CACHE["ts"] > 30:
+        _CONTAINER_IPS_CACHE["ips"] = get_container_ips()
+        _CONTAINER_IPS_CACHE["ts"] = now
+    container_ips = _CONTAINER_IPS_CACHE["ips"]
     internal_port = 40000 + index
     item = {
         "instance": index + 1,
@@ -463,7 +498,12 @@ def refresh_instance(index, cfg):
         "internal_port": internal_port,
         "egress_ip": None,
         "warp": False,
+        "proxy_host": proxy_host,
+        "proxy_address": proxy_address,
+        "container_ips": container_ips,
         "colo": None,
+        "country_code": None,
+        "country_name": None,
         "location": None,
         "process_healthy": instance_process_alive(index),
         "proxy_healthy": port_open(proxy_port),
@@ -476,8 +516,12 @@ def refresh_instance(index, cfg):
         trace = trace_for_proxy(proxy_port, cfg)
         item["egress_ip"] = trace.get("ip")
         item["warp"] = trace.get("warp") in ("on", "plus")
-        item["colo"] = trace.get("colo")
-        item["location"] = trace.get("loc")
+        colo = trace.get("colo")
+        loc = trace.get("loc")
+        item["colo"] = colo
+        item["country_code"] = loc
+        item["country_name"] = loc
+        item["location"] = loc
         item["proxy_healthy"] = True
         item["health"] = "healthy" if item["warp"] and item["process_healthy"] else "degraded"
     except Exception as exc:
@@ -513,10 +557,15 @@ def refresh_all(force=False):
             results.setdefault(idx + 1, {
                 "instance": idx + 1,
                 "proxy_port": cfg["proxy_base_port"] + idx if cfg["proxy_mode"] == "dedicated" else 1080,
+                "proxy_host": cfg.get("proxy_host") or "",
+                "proxy_address": "",
+                "container_ips": [],
                 "internal_port": 40000 + idx,
                 "egress_ip": None,
                 "warp": False,
                 "colo": None,
+                "country_code": None,
+                "country_name": None,
                 "location": None,
                 "process_healthy": instance_process_alive(idx),
                 "proxy_healthy": False,
@@ -533,6 +582,8 @@ def refresh_all(force=False):
 
 def get_instances():
     cfg = get_config(False)
+    proxy_host = cfg.get("proxy_host") or ""
+    container_ips = get_container_ips()
     now = time.time()
     last = STATE.get("last_refresh_finished")
     if not last or now - last > cfg["auto_refresh_interval"]:
@@ -541,13 +592,20 @@ def get_instances():
     items = []
     for idx in range(cfg["instances"]):
         existing = cached.get(idx + 1, {})
+        proxy_port = cfg["proxy_base_port"] + idx if cfg["proxy_mode"] == "dedicated" else 1080
+        proxy_address = f"{proxy_host}:{proxy_port}" if proxy_host else ""
         item = {
             "instance": idx + 1,
-            "proxy_port": cfg["proxy_base_port"] + idx if cfg["proxy_mode"] == "dedicated" else 1080,
+            "proxy_port": proxy_port,
             "internal_port": 40000 + idx,
             "egress_ip": None,
             "warp": False,
+            "proxy_host": proxy_host,
+            "proxy_address": proxy_address,
+            "container_ips": container_ips,
             "colo": None,
+            "country_code": None,
+            "country_name": None,
             "location": None,
             "process_healthy": instance_process_alive(idx),
             "proxy_healthy": port_open(cfg["proxy_base_port"] + idx if cfg["proxy_mode"] == "dedicated" else 1080),
@@ -887,6 +945,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "instances",
                 "proxy_mode",
                 "proxy_base_port",
+                "proxy_host",
                 "proxy_max_rps",
                 "warp_connect_timeout",
                 "auto_refresh_interval",

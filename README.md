@@ -52,6 +52,7 @@ If working, you'll see `warp=on` in the output.
 | `WARP_INSTANCES` | Number of WARP instances. Current egress IPs are shared/dynamic Cloudflare addresses; dedicated mode guarantees port-to-instance mapping, not permanent IP assignment. No extra capabilities required | `1` |
 | `PROXY_MODE` | Proxy mode: `round-robin` (shared ports, IP rotation) or `dedicated` (one SOCKS5 port per instance) | `round-robin` |
 | `PROXY_BASE_PORT` | Base port for dedicated mode. Instance N listens on `PROXY_BASE_PORT + N`. Ignored in round-robin mode | `2080` |
+| `PROXY_HOST` | Host or IP that clients use to reach the proxy (e.g. `10.0.0.254`, `proxy.example.com`). Used by the admin dashboard to display Proxy Address. Does not change proxy binding | - |
 | `WARP_LICENSE_KEY` | WARP+ license key. Comma-separated for multiple keys — tries each in order, skips any that fail | - |
 | `WARP_ORG` | Zero Trust team name. Enables automatic enrollment via service token (see [Zero Trust](#zero-trust-free-warp-routing) section). Mutually exclusive with `WARP_LICENSE_KEY` | - |
 | `WARP_AUTH_CLIENT_ID` | Service token Client ID (required when `WARP_ORG` is set) | - |
@@ -282,6 +283,26 @@ GET  /health
 ```
 
 The dashboard labels WARP exits as `Current Egress IP` because Cloudflare WARP IPs are shared and dynamic. The guaranteed association in dedicated mode is `port -> WARP instance`.
+
+## IP Terminology
+
+The admin dashboard and API expose several address fields. Each serves a different purpose:
+
+| Term | Meaning |
+|------|---------|
+| **Proxy Host / Proxy Address** | The host and port a client connects to in order to use the SOCKS5 proxy. Set via `PROXY_HOST` and `PROXY_BASE_PORT`. Example: `10.0.0.254:2080`. This is the address you configure in browsers, scrapers, or downstream services |
+| **Container IP** | The IPv4 address(es) of the Docker container's network interfaces (excluding loopback). Informational only. When the container has multiple Docker networks attached, all non-loopback addresses are listed |
+| **Current Egress IP** | The public IP address that remote servers see when traffic exits through Cloudflare WARP. This is a shared, dynamic Cloudflare address and may change at any time. It is **not** the address clients connect to |
+
+Example dashboard row:
+
+```text
+Instance | Proxy Address    | Container IP | Current Egress IP | Country | Colo | WARP | Health
+1        | 10.0.0.254:2080  | 10.11.10.54  | 2a09:bac5:...     | Brazil  | GRU  | ON   | Healthy
+2        | 10.0.0.254:2081  | 10.11.10.54  | 2a09:bac5:...     | Brazil  | GRU  | ON   | Healthy
+```
+
+The API endpoint `GET /api/instances` returns `proxy_host`, `proxy_address`, `container_ips`, `egress_ip`, `country_code`, `country_name`, and `colo` for each instance.
 
 ## Zero Trust (Free WARP+ Routing)
 

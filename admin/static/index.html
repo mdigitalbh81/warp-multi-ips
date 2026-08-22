@@ -44,14 +44,13 @@
           <thead>
             <tr>
               <th>Instance</th>
-              <th>Proxy</th>
-              <th>Internal endpoint</th>
-              <th>Current Egress IP</th>
+              <th><span class="th-tip" title="Address that clients use to connect to the SOCKS5 proxy">Proxy Address</span></th>
+              <th>Container IP</th>
+              <th><span class="th-tip" title="Public address currently used by Cloudflare WARP for outbound traffic">Current Egress IP</span></th>
+              <th>Country</th>
+              <th>Colo</th>
               <th>WARP</th>
-              <th>Process</th>
-              <th>GOST</th>
               <th>Health</th>
-              <th>Last check</th>
             </tr>
           </thead>
           <tbody id="instancesBody"></tbody>
@@ -81,6 +80,10 @@
           <label>
             Proxy Base Port
             <input name="proxy_base_port" type="number" min="1" max="65535" step="1" required>
+          </label>
+          <label>
+            Proxy Host
+            <input name="proxy_host" type="text" placeholder="e.g. 10.0.0.254 or proxy.example.com">
           </label>
           <label>
             Proxy Max RPS

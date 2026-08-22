@@ -19,6 +19,7 @@ services:
                                                    # round-robin: all instances share ports 1080/8080/8388
                                                    # dedicated: each instance gets its own SOCKS5 port
       # - PROXY_BASE_PORT=2080                    # base port for dedicated mode (port = base + instance)
+      # - PROXY_HOST=                               # host/IP clients use to reach the proxy (e.g. 10.0.0.254)
       # - WARP_LICENSE_KEY=your-key              # WARP+ license key (comma-separated for multiple)
       # - WARP_CONNECT_TIMEOUT=30                # max seconds to wait for WARP daemon
       # - PROXY_USER=myuser                      # proxy authentication username

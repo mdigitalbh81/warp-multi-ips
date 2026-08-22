@@ -111,6 +111,15 @@ button.icon {
 
 .metrics div,
 .panel,
+.th-tip {
+  cursor: help;
+  border-bottom: 1px dotted var(--muted);
+}
+
+.th-tip[title] {
+  position: relative;
+}
+
 dialog {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -143,7 +152,7 @@ dialog {
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 980px;
+  min-width: 1080px;
 }
 
 th,
@@ -203,6 +212,15 @@ tr:last-child td {
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.th-tip {
+  cursor: help;
+  border-bottom: 1px dotted var(--muted);
+}
+
+.th-tip[title] {
+  position: relative;
 }
 
 dialog {

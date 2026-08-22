@@ -22,6 +22,7 @@ load_admin_config() {
         WARP_INSTANCES=$(jq -r '.instances // env.WARP_INSTANCES // "1"' "$ADMIN_CONFIG_FILE")
         PROXY_MODE=$(jq -r '.proxy_mode // env.PROXY_MODE // "round-robin"' "$ADMIN_CONFIG_FILE")
         PROXY_BASE_PORT=$(jq -r '.proxy_base_port // env.PROXY_BASE_PORT // "2080"' "$ADMIN_CONFIG_FILE")
+        PROXY_HOST=$(jq -r '.proxy_host // env.PROXY_HOST // ""' "$ADMIN_CONFIG_FILE")
         PROXY_MAX_RPS=$(jq -r '.proxy_max_rps // env.PROXY_MAX_RPS // "50"' "$ADMIN_CONFIG_FILE")
         WARP_CONNECT_TIMEOUT=$(jq -r '.warp_connect_timeout // env.WARP_CONNECT_TIMEOUT // "30"' "$ADMIN_CONFIG_FILE")
         AUTO_REFRESH_INTERVAL=$(jq -r '.auto_refresh_interval // env.AUTO_REFRESH_INTERVAL // "60"' "$ADMIN_CONFIG_FILE")
@@ -58,10 +59,12 @@ init_admin_config() {
             --argjson proxy_auth_enabled "$auth_enabled" \
             --arg proxy_user "${PROXY_USER:-}" \
             --arg proxy_password "${PROXY_PASS:-}" \
+            --arg proxy_host "${PROXY_HOST:-}" \
             '{
               instances: $instances,
               proxy_mode: $proxy_mode,
               proxy_base_port: $proxy_base_port,
+              proxy_host: $proxy_host,
               proxy_max_rps: $proxy_max_rps,
               warp_connect_timeout: $warp_connect_timeout,
               auto_refresh_interval: $auto_refresh_interval,
@@ -130,6 +133,7 @@ write_admin_env_file() {
         printf 'AUTO_REFRESH_INTERVAL=%s\n' "${AUTO_REFRESH_INTERVAL:-60}"
         printf 'PROXY_AUTH_ENABLED=%s\n' "${PROXY_AUTH_ENABLED:-false}"
         printf 'PROXY_USER=%s\n' "${PROXY_USER:-}"
+        printf 'PROXY_HOST=%s\n' "${PROXY_HOST:-}"
     } > "$WARP_ENV_FILE"
 }
 

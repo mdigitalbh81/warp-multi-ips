@@ -1,3 +1,51 @@
+// ISO 3166-1 alpha-2 country code to name map
+const COUNTRY_NAMES = {
+  AF:"Afghanistan",AL:"Albania",DZ:"Algeria",AS:"American Samoa",AD:"Andorra",
+  AO:"Angola",AG:"Antigua and Barbuda",AR:"Argentina",AM:"Armenia",AU:"Australia",
+  AT:"Austria",AZ:"Azerbaijan",BS:"Bahamas",BH:"Bahrain",BD:"Bangladesh",
+  BB:"Barbados",BY:"Belarus",BE:"Belgium",BZ:"Belize",BJ:"Benin",BM:"Bermuda",
+  BT:"Bhutan",BO:"Bolivia",BA:"Bosnia and Herzegovina",BW:"Botswana",BR:"Brazil",
+  BN:"Brunei",BG:"Bulgaria",BF:"Burkina Faso",BI:"Burundi",CV:"Cabo Verde",
+  KH:"Cambodia",CM:"Cameroon",CA:"Canada",CF:"Central African Republic",TD:"Chad",
+  CL:"Chile",CN:"China",CO:"Colombia",KM:"Comoros",CG:"Congo",
+  CD:"Congo (DRC)",CR:"Costa Rica",CI:"Cote d'Ivoire",HR:"Croatia",CU:"Cuba",
+  CY:"Cyprus",CZ:"Czechia",DK:"Denmark",DJ:"Djibouti",DM:"Dominica",
+  DO:"Dominican Republic",EC:"Ecuador",EG:"Egypt",SV:"El Salvador",GQ:"Equatorial Guinea",
+  ER:"Eritrea",EE:"Estonia",SZ:"Eswatini",ET:"Ethiopia",FJ:"Fiji",
+  FI:"Finland",FR:"France",GA:"Gabon",GM:"Gambia",GE:"Georgia",
+  DE:"Germany",GH:"Ghana",GR:"Greece",GD:"Grenada",GU:"Guam",
+  GT:"Guatemala",GN:"Guinea",GW:"Guinea-Bissau",GY:"Guyana",HT:"Haiti",
+  HN:"Honduras",HK:"Hong Kong",HU:"Hungary",IS:"Iceland",IN:"India",
+  ID:"Indonesia",IR:"Iran",IQ:"Iraq",IE:"Ireland",IL:"Israel",
+  IT:"Italy",JM:"Jamaica",JP:"Japan",JO:"Jordan",KZ:"Kazakhstan",
+  KE:"Kenya",KI:"Kiribati",KP:"North Korea",KR:"South Korea",KW:"Kuwait",
+  KG:"Kyrgyzstan",LA:"Laos",LV:"Latvia",LB:"Lebanon",LS:"Lesotho",
+  LR:"Liberia",LY:"Libya",LI:"Liechtenstein",LT:"Lithuania",LU:"Luxembourg",
+  MO:"Macao",MG:"Madagascar",MW:"Malawi",MY:"Malaysia",MV:"Maldives",
+  ML:"Mali",MT:"Malta",MH:"Marshall Islands",MR:"Mauritania",MU:"Mauritius",
+  MX:"Mexico",FM:"Micronesia",MD:"Moldova",MC:"Monaco",MN:"Mongolia",
+  ME:"Montenegro",MA:"Morocco",MZ:"Mozambique",MM:"Myanmar",NA:"Namibia",
+  NR:"Nauru",NP:"Nepal",NL:"Netherlands",NZ:"New Zealand",NI:"Nicaragua",
+  NE:"Niger",NG:"Nigeria",MK:"North Macedonia",NO:"Norway",OM:"Oman",
+  PK:"Pakistan",PW:"Palau",PS:"Palestine",PA:"Panama",PG:"Papua New Guinea",
+  PY:"Paraguay",PE:"Peru",PH:"Philippines",PL:"Poland",PT:"Portugal",
+  PR:"Puerto Rico",QA:"Qatar",RE:"Reunion",RO:"Romania",RU:"Russia",
+  RW:"Rwanda",SA:"Saudi Arabia",SN:"Senegal",RS:"Serbia",SC:"Seychelles",
+  SL:"Sierra Leone",SG:"Singapore",SK:"Slovakia",SI:"Slovenia",SB:"Solomon Islands",
+  SO:"Somalia",ZA:"South Africa",SS:"South Sudan",ES:"Spain",LK:"Sri Lanka",
+  SD:"Sudan",SR:"Suriname",SE:"Sweden",CH:"Switzerland",SY:"Syria",
+  TW:"Taiwan",TJ:"Tajikistan",TZ:"Tanzania",TH:"Thailand",TL:"Timor-Leste",
+  TG:"Togo",TO:"Tonga",TT:"Trinidad and Tobago",TN:"Tunisia",TR:"Turkey",
+  TM:"Turkmenistan",TV:"Tuvalu",UG:"Uganda",UA:"Ukraine",AE:"United Arab Emirates",
+  GB:"United Kingdom",US:"United States",UY:"Uruguay",UZ:"Uzbekistan",VU:"Vanuatu",
+  VE:"Venezuela",VN:"Vietnam",YE:"Yemen",ZM:"Zambia",ZW:"Zimbabwe",
+};
+
+function countryName(code) {
+  if (!code) return "-";
+  return COUNTRY_NAMES[code.toUpperCase()] || code;
+}
+
 const state = {
   config: null,
   status: null,
@@ -84,20 +132,22 @@ function renderSummary() {
 function renderInstances() {
   els.instancesBody.innerHTML = state.instances.map((item) => {
     const warpLabel = item.warp ? "ON" : "OFF";
-    const processLabel = item.process_healthy ? "Running" : "Down";
-    const gostLabel = item.listener_healthy ? "Listening" : "Down";
     const health = item.health || "unknown";
+    const proxyAddr = item.proxy_address || "-";
+    const containerIps = (item.container_ips || []).join(", ") || "-";
+    const country = item.country_code
+      ? `${countryName(item.country_code)}`
+      : "-";
     return `
       <tr>
         <td>${item.instance}</td>
-        <td class="mono">:${item.proxy_port}</td>
-        <td class="mono">127.0.0.1:${item.internal_port}</td>
+        <td class="mono">${proxyAddr}</td>
+        <td class="mono">${containerIps}</td>
         <td class="mono">${item.egress_ip || "-"}</td>
+        <td>${country}</td>
+        <td class="mono">${item.colo || "-"}</td>
         <td>${pill(warpLabel, item.warp ? "on" : "off")}</td>
-        <td>${pill(processLabel, item.process_healthy)}</td>
-        <td>${pill(gostLabel, item.listener_healthy)}</td>
         <td>${pill(health[0].toUpperCase() + health.slice(1), health)}</td>
-        <td>${formatDate(item.last_check)}</td>
       </tr>
     `;
   }).join("");
@@ -110,6 +160,7 @@ function populateSettings() {
   form.proxy_mode.value = cfg.proxy_mode;
   form.instances.value = cfg.instances;
   form.proxy_base_port.value = cfg.proxy_base_port;
+  form.proxy_host.value = cfg.proxy_host || "";
   form.proxy_max_rps.value = cfg.proxy_max_rps;
   form.warp_connect_timeout.value = cfg.warp_connect_timeout;
   form.auto_refresh_interval.value = cfg.auto_refresh_interval;
@@ -235,6 +286,7 @@ els.settingsForm.addEventListener("submit", async (event) => {
     proxy_mode: form.proxy_mode.value,
     instances: Number(form.instances.value),
     proxy_base_port: Number(form.proxy_base_port.value),
+    proxy_host: form.proxy_host.value.trim(),
     proxy_max_rps: Number(form.proxy_max_rps.value),
     warp_connect_timeout: Number(form.warp_connect_timeout.value),
     auto_refresh_interval: Number(form.auto_refresh_interval.value),
