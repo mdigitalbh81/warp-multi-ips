@@ -20,11 +20,19 @@ COPY entrypoint.sh /entrypoint.sh
 COPY start-warp-instance.sh /start-warp-instance.sh
 COPY ./healthcheck /healthcheck
 
-RUN case ${TARGETPLATFORM} in \
-      "linux/amd64")   ARCH="amd64" ;; \
-      "linux/arm64")   ARCH="arm64" ;; \
-      *) echo "Unsupported TARGETPLATFORM: ${TARGETPLATFORM}" && exit 1 ;; \
-    esac && \
+RUN if [ -n "${TARGETPLATFORM}" ]; then \
+      case ${TARGETPLATFORM} in \
+        "linux/amd64") ARCH="amd64" ;; \
+        "linux/arm64") ARCH="arm64" ;; \
+        *) echo "Unsupported TARGETPLATFORM: ${TARGETPLATFORM}" && exit 1 ;; \
+      esac; \
+    else \
+      case "$(dpkg --print-architecture)" in \
+        "amd64") ARCH="amd64" ;; \
+        "arm64") ARCH="arm64" ;; \
+        *) echo "Unsupported local architecture: $(dpkg --print-architecture)" && exit 1 ;; \
+      esac; \
+    fi && \
     apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release sudo jq dbus && \
@@ -54,10 +62,12 @@ RUN mkdir -p /home/warp/.local/share/warp && \
 
 ENV WARP_INSTANCES=1
 ENV WARP_CONNECT_TIMEOUT=30
+ENV PROXY_MODE=round-robin
+ENV PROXY_BASE_PORT=2080
 ENV PROXY_USER=
 ENV PROXY_PASS=
 ENV PROXY_MAX_CONN=10
-ENV PROXY_MAX_RPS=10
+ENV PROXY_MAX_RPS=50
 ENV PROXY_ALLOWED_IPS=
 ENV SS_METHOD=chacha20-ietf-poly1305
 

@@ -14,13 +14,17 @@ services:
       # - WARP_INSTANCES=1                       # number of WARP instances (default: 1)
                                                   # each instance gets a unique Cloudflare IP
                                                   # traffic is round-robined across all instances
+      # - PROXY_MODE=round-robin                  # 'round-robin' (default) or 'dedicated'
+                                                   # round-robin: all instances share ports 1080/8080/8388
+                                                   # dedicated: each instance gets its own SOCKS5 port
+      # - PROXY_BASE_PORT=2080                    # base port for dedicated mode (port = base + instance)
       # - WARP_LICENSE_KEY=your-key              # WARP+ license key (comma-separated for multiple)
       # - WARP_CONNECT_TIMEOUT=30                # max seconds to wait for WARP daemon
       # - PROXY_USER=myuser                      # proxy authentication username
       # - PROXY_PASS=mypassword                  # proxy authentication password
       # - PROXY_ALLOWED_IPS=192.168.1.0/24       # IP whitelist (comma-separated CIDRs)
       # - PROXY_MAX_CONN=10                      # max concurrent connections per IP
-      # - PROXY_MAX_RPS=10                       # max requests per second per IP
+      # - PROXY_MAX_RPS=50                       # max requests per second per IP
       # - SS_METHOD=chacha20-ietf-poly1305       # Shadowsocks encryption method
     volumes:
       - warp-data:/var/lib/cloudflare-warp
