@@ -17,6 +17,7 @@ INSTANCE=${1:?"Instance number required"}
 PORT=${2:?"Port number required"}
 LICENSE_KEYS_CSV=${3:-}
 CONNECT_TIMEOUT=${4:-30}
+PID_FILE="/tmp/warp-instance-${INSTANCE}.pid"
 
 # Parse license keys
 ALL_KEYS=()
@@ -84,6 +85,7 @@ sudo env \
     DBUS_SYSTEM_BUS_ADDRESS="unix:path=${DBUS_SOCK}" \
     warp-svc --accept-tos &
 WARP_PID=$!
+echo "$WARP_PID" > "$PID_FILE"
 
 # Wait for the daemon to be ready
 ELAPSED=0

@@ -18,6 +18,8 @@ LABEL COMMIT_SHA=${COMMIT_SHA}
 
 COPY entrypoint.sh /entrypoint.sh
 COPY start-warp-instance.sh /start-warp-instance.sh
+COPY warp-common.sh /warp-common.sh
+COPY admin /admin
 COPY ./healthcheck /healthcheck
 
 RUN if [ -n "${TARGETPLATFORM}" ]; then \
@@ -35,7 +37,7 @@ RUN if [ -n "${TARGETPLATFORM}" ]; then \
     fi && \
     apt-get update && \
     apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release sudo jq dbus && \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release sudo jq dbus python3 && \
     curl https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
     echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list && \
     apt-get update && \
@@ -51,6 +53,8 @@ RUN if [ -n "${TARGETPLATFORM}" ]; then \
     chmod +x /usr/bin/gost && \
     chmod +x /entrypoint.sh && \
     chmod +x /start-warp-instance.sh && \
+    chmod +x /warp-common.sh && \
+    chmod +x /admin/server.py && \
     chmod +x /healthcheck/index.sh && \
     useradd -m -s /bin/bash warp && \
     echo "warp ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/warp
@@ -70,6 +74,12 @@ ENV PROXY_MAX_CONN=10
 ENV PROXY_MAX_RPS=50
 ENV PROXY_ALLOWED_IPS=
 ENV SS_METHOD=chacha20-ietf-poly1305
+ENV ADMIN_ENABLED=false
+ENV ADMIN_PORT=9090
+ENV ADMIN_USER=admin
+ENV ADMIN_PASSWORD=
+ENV ADMIN_MAX_INSTANCES=200
+ENV AUTO_REFRESH_INTERVAL=60
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=120s --retries=3 \
   CMD /healthcheck/index.sh

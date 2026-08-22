@@ -9,62 +9,22 @@
 
 set -e
 
-WARP_INSTANCES=${WARP_INSTANCES:-1}
+. /warp-common.sh
 
-# ---- Proxy mode configuration ----
+WARP_INSTANCES=${WARP_INSTANCES:-1}
 PROXY_MODE=${PROXY_MODE:-round-robin}
 PROXY_BASE_PORT=${PROXY_BASE_PORT:-2080}
-if [ "$PROXY_MODE" != "round-robin" ] && [ "$PROXY_MODE" != "dedicated" ]; then
-    echo "Error: PROXY_MODE must be 'round-robin' or 'dedicated' (got: '${PROXY_MODE}')"
-    exit 1
-fi
+PROXY_MAX_RPS=${PROXY_MAX_RPS:-50}
+WARP_CONNECT_TIMEOUT=${WARP_CONNECT_TIMEOUT:-30}
+AUTO_REFRESH_INTERVAL=${AUTO_REFRESH_INTERVAL:-60}
 
-# Validate PROXY_BASE_PORT
-if ! [[ "$PROXY_BASE_PORT" =~ ^[0-9]+$ ]]; then
-    echo "Error: PROXY_BASE_PORT must be a positive integer (got: '${PROXY_BASE_PORT}')"
-    exit 1
+init_admin_config
+load_admin_config
+validate_runtime_config
+if [ "${ADMIN_ENABLED:-false}" = "true" ]; then
+    sudo chown -R warp:warp /var/lib/cloudflare-warp
 fi
-if [ "$PROXY_BASE_PORT" -lt 1 ] || [ "$PROXY_BASE_PORT" -gt 65535 ]; then
-    echo "Error: PROXY_BASE_PORT must be between 1 and 65535 (got: ${PROXY_BASE_PORT})"
-    exit 1
-fi
-
-# Validate WARP_INSTANCES
-if ! [[ "$WARP_INSTANCES" =~ ^[0-9]+$ ]] || [ "$WARP_INSTANCES" -lt 1 ]; then
-    echo "Error: WARP_INSTANCES must be a positive integer"
-    exit 1
-fi
-
-# In dedicated mode, validate that all generated ports are within TCP range
-if [ "$PROXY_MODE" = "dedicated" ]; then
-    LAST_PORT=$((PROXY_BASE_PORT + WARP_INSTANCES - 1))
-    if [ "$LAST_PORT" -gt 65535 ]; then
-        echo "Error: PROXY_BASE_PORT=${PROXY_BASE_PORT} with WARP_INSTANCES=${WARP_INSTANCES} would exceed TCP port range (last port: ${LAST_PORT})"
-        exit 1
-    fi
-
-    # Check for conflicts with well-known fixed ports used by this container
-    FIXED_PORTS="1081 8080 8081 8388 8389"
-    for i in $(seq 0 $((WARP_INSTANCES - 1))); do
-        DPORT=$((PROXY_BASE_PORT + i))
-        for fp in $FIXED_PORTS; do
-            if [ "$DPORT" -eq "$fp" ]; then
-                echo "Error: Dedicated port ${DPORT} (instance $((i+1))) conflicts with fixed service port ${fp}"
-                echo "  Fixed ports in use: 1081 (SOCKS5 direct), 8080 (HTTP WARP), 8081 (HTTP direct), 8388 (SS WARP), 8389 (SS direct)"
-                echo "  Choose a different PROXY_BASE_PORT to avoid overlap."
-                exit 1
-            fi
-        done
-        # Also check for conflict with internal WARP ports (40000+)
-        for j in $(seq 0 $((WARP_INSTANCES - 1))); do
-            WPORT=$((40000 + j))
-            if [ "$DPORT" -eq "$WPORT" ]; then
-                echo "Error: Dedicated port ${DPORT} (instance $((i+1))) conflicts with internal WARP port ${WPORT}"
-                exit 1
-            fi
-        done
-    done
-fi
+write_admin_env_file
 
 # ---- Parse license key(s) — WARP_LICENSE_KEY accepts comma-separated values ----
 LICENSE_KEYS=()
@@ -82,6 +42,7 @@ LICENSE_KEYS_CSV=""
 if [ "$NUM_KEYS" -gt 0 ]; then
     LICENSE_KEYS_CSV=$(IFS=','; echo "${LICENSE_KEYS[*]}")
 fi
+export LICENSE_KEYS_CSV
 
 # ---- Zero Trust enrollment mode (service token auth) ----
 ZT_MODE=false
@@ -133,7 +94,7 @@ MDMEOF
 # ==============================================================================
 # SINGLE INSTANCE MODE (default, fully backward-compatible)
 # ==============================================================================
-if [ "$WARP_INSTANCES" -eq 1 ] && [ "$PROXY_MODE" != "dedicated" ]; then
+if [ "$WARP_INSTANCES" -eq 1 ] && [ "$PROXY_MODE" != "dedicated" ] && [ "${ADMIN_ENABLED:-false}" != "true" ]; then
 
     # start dbus
     sudo mkdir -p /run/dbus
@@ -318,7 +279,7 @@ fi
 #
 # Each warp-svc uses STATE_DIRECTORY and RUNTIME_DIRECTORY env vars
 # (systemd convention) to see its own data dir and IPC socket.
-# Each instance gets a unique Cloudflare IP for round-robin rotation.
+# Current egress IPs are shared/dynamic Cloudflare addresses.
 #
 # No extra Docker capabilities required (no SYS_ADMIN).
 # ==============================================================================
@@ -339,300 +300,6 @@ echo " License keys : ${NUM_KEYS} (auto-fallback)"
 fi
 echo "========================================"
 echo ""
-
-# ---- helper: generate GOST YAML config for round-robin ----
-# $1 = verify_dir — directory with per-instance verification results
-generate_gost_config_roundrobin() {
-    local verify_dir="$1"
-    local config_file="/tmp/gost-config.yaml"
-    local ss_pass="${PROXY_PASS:-cloudflare-warp}"
-    local ss_method="${SS_METHOD:-chacha20-ietf-poly1305}"
-    local climiter_val="${PROXY_MAX_CONN:-10}"
-    local rlimiter_val="${PROXY_MAX_RPS:-50}"
-
-    # --- chain node list (only verified instances) ---
-    local nodes=""
-    local healthy_ports=""
-    for i in $(seq 0 $((WARP_INSTANCES - 1))); do
-        if [ -f "${verify_dir}/${i}" ]; then
-            local port=$((40000 + i))
-            nodes="${nodes}
-    - name: warp-${i}
-      addr: 127.0.0.1:${port}
-      connector:
-        type: socks5
-      dialer:
-        type: tcp"
-            healthy_ports="${healthy_ports}${port}\n"
-        fi
-    done
-
-    # Persist healthy ports for the healthcheck script
-    printf "%b" "$healthy_ports" > /tmp/healthy-warp-ports
-
-    # --- proxy auth block (SOCKS5 / HTTP handlers) ---
-    local proxy_auth=""
-    if [ -n "$PROXY_USER" ] && [ -n "$PROXY_PASS" ]; then
-        proxy_auth="
-    auth:
-      username: ${PROXY_USER}
-      password: ${PROXY_PASS}"
-    fi
-
-    # --- admission (IP whitelist) ---
-    local admission_ref=""
-    local admission_section=""
-    if [ -n "$PROXY_ALLOWED_IPS" ]; then
-        admission_ref="
-  admission: admission-0"
-        local matchers=""
-        IFS=',' read -ra IPS <<< "$PROXY_ALLOWED_IPS"
-        for ip in "${IPS[@]}"; do
-            ip=$(echo "$ip" | xargs)  # trim whitespace
-            matchers="${matchers}
-  - ${ip}"
-        done
-        admission_section="
-admissions:
-- name: admission-0
-  whitelist: true
-  matchers:${matchers}"
-    fi
-
-    # --- write YAML ---
-    cat > "$config_file" <<EOF
-services:
-# ---- WARP proxies (round-robin) ----
-- name: socks5-warp
-  addr: ":1080"
-  handler:
-    type: socks5
-    chain: warp-chain${proxy_auth}
-  listener:
-    type: tcp
-  climiter: climiter-0
-  rlimiter: rlimiter-0${admission_ref}
-
-- name: http-warp
-  addr: ":8080"
-  handler:
-    type: http
-    chain: warp-chain${proxy_auth}
-  listener:
-    type: tcp
-  climiter: climiter-0
-  rlimiter: rlimiter-0${admission_ref}
-
-- name: ss-warp
-  addr: ":8388"
-  handler:
-    type: ss
-    chain: warp-chain
-    auth:
-      username: ${ss_method}
-      password: ${ss_pass}
-  listener:
-    type: tcp
-  climiter: climiter-0
-  rlimiter: rlimiter-0${admission_ref}
-
-# ---- Direct proxies (bypass WARP) ----
-- name: socks5-direct
-  addr: ":1081"
-  handler:
-    type: socks5${proxy_auth}
-  listener:
-    type: tcp
-  climiter: climiter-0
-  rlimiter: rlimiter-0${admission_ref}
-
-- name: http-direct
-  addr: ":8081"
-  handler:
-    type: http${proxy_auth}
-  listener:
-    type: tcp
-  climiter: climiter-0
-  rlimiter: rlimiter-0${admission_ref}
-
-- name: ss-direct
-  addr: ":8389"
-  handler:
-    type: ss
-    auth:
-      username: ${ss_method}
-      password: ${ss_pass}
-  listener:
-    type: tcp
-  climiter: climiter-0
-  rlimiter: rlimiter-0${admission_ref}
-
-# ---- Round-robin chain ----
-chains:
-- name: warp-chain
-  hops:
-  - name: warp-hop
-    selector:
-      strategy: round
-      maxFails: 3
-      failTimeout: 30s
-    nodes:${nodes}
-
-# ---- Limiters ----
-climiters:
-- name: climiter-0
-  limits:
-  - '\$ ${climiter_val}'
-
-rlimiters:
-- name: rlimiter-0
-  limits:
-  - '\$ ${rlimiter_val}'
-${admission_section}
-EOF
-
-    echo "GOST config written to ${config_file}"
-}
-
-# ---- helper: generate GOST YAML config for dedicated mode ----
-# $1 = verify_dir — directory with per-instance verification results
-generate_gost_config_dedicated() {
-    local verify_dir="$1"
-    local config_file="/tmp/gost-config.yaml"
-    local ss_pass="${PROXY_PASS:-cloudflare-warp}"
-    local ss_method="${SS_METHOD:-chacha20-ietf-poly1305}"
-    local climiter_val="${PROXY_MAX_CONN:-10}"
-    local rlimiter_val="${PROXY_MAX_RPS:-50}"
-
-    # --- proxy auth block (SOCKS5 / HTTP handlers) ---
-    local proxy_auth=""
-    if [ -n "$PROXY_USER" ] && [ -n "$PROXY_PASS" ]; then
-        proxy_auth="
-    auth:
-      username: ${PROXY_USER}
-      password: ${PROXY_PASS}"
-    fi
-
-    # --- admission (IP whitelist) ---
-    local admission_ref=""
-    local admission_section=""
-    if [ -n "$PROXY_ALLOWED_IPS" ]; then
-        admission_ref="
-  admission: admission-0"
-        local matchers=""
-        IFS=',' read -ra IPS <<< "$PROXY_ALLOWED_IPS"
-        for ip in "${IPS[@]}"; do
-            ip=$(echo "$ip" | xargs)
-            matchers="${matchers}
-  - ${ip}"
-        done
-        admission_section="
-admissions:
-- name: admission-0
-  whitelist: true
-  matchers:${matchers}"
-    fi
-
-    # --- per-instance services and chains ---
-    local dedicated_services=""
-    local dedicated_chains=""
-    local healthy_ports=""
-
-    for i in $(seq 0 $((WARP_INSTANCES - 1))); do
-        if [ -f "${verify_dir}/${i}" ]; then
-            local warp_port=$((40000 + i))
-            local proxy_port=$((PROXY_BASE_PORT + i))
-            healthy_ports="${healthy_ports}${warp_port}\n"
-
-            dedicated_services="${dedicated_services}
-- name: socks5-warp-${i}
-  addr: \":${proxy_port}\"
-  handler:
-    type: socks5
-    chain: warp-chain-${i}${proxy_auth}
-  listener:
-    type: tcp
-  climiter: climiter-0
-  rlimiter: rlimiter-0${admission_ref}
-"
-
-            dedicated_chains="${dedicated_chains}
-- name: warp-chain-${i}
-  hops:
-  - name: warp-hop-${i}
-    nodes:
-    - name: warp-${i}
-      addr: 127.0.0.1:${warp_port}
-      connector:
-        type: socks5
-      dialer:
-        type: tcp
-"
-            echo "[dedicated] WARP instance $((i+1)) -> 127.0.0.1:${warp_port} -> proxy :${proxy_port}"
-        else
-            echo "[dedicated] WARP instance $((i+1)) -> SKIPPED (failed verification)"
-        fi
-    done
-
-    # Persist healthy ports for the healthcheck script
-    printf "%b" "$healthy_ports" > /tmp/healthy-warp-ports
-
-    # --- write YAML ---
-    cat > "$config_file" <<EOF
-services:
-# ---- Dedicated WARP proxies (1 port per instance) ----
-${dedicated_services}
-# ---- Direct proxies (bypass WARP) ----
-- name: socks5-direct
-  addr: ":1081"
-  handler:
-    type: socks5${proxy_auth}
-  listener:
-    type: tcp
-  climiter: climiter-0
-  rlimiter: rlimiter-0${admission_ref}
-
-- name: http-direct
-  addr: ":8081"
-  handler:
-    type: http${proxy_auth}
-  listener:
-    type: tcp
-  climiter: climiter-0
-  rlimiter: rlimiter-0${admission_ref}
-
-- name: ss-direct
-  addr: ":8389"
-  handler:
-    type: ss
-    auth:
-      username: ${ss_method}
-      password: ${ss_pass}
-  listener:
-    type: tcp
-  climiter: climiter-0
-  rlimiter: rlimiter-0${admission_ref}
-
-# ---- Dedicated chains (one per instance) ----
-chains:
-${dedicated_chains}
-
-# ---- Limiters ----
-climiters:
-- name: climiter-0
-  limits:
-  - '\$ ${climiter_val}'
-
-rlimiters:
-- name: rlimiter-0
-  limits:
-  - '\$ ${rlimiter_val}'
-${admission_section}
-EOF
-
-    echo ""
-    echo "GOST config written to ${config_file}"
-}
 
 # ---- start each WARP instance with isolated paths ----
 INSTANCE_PIDS=()
@@ -718,7 +385,7 @@ if [ "$PROXY_MODE" = "dedicated" ]; then
     fi
     echo "========================================================="
 else
-    echo "=== Proxy Endpoints (round-robin across ${READY_COUNT} IPs) ==="
+    echo "=== Proxy Endpoints (round-robin across ${READY_COUNT} instances) ==="
     echo "  SOCKS5 (WARP)  : :1080"
     echo "  HTTP   (WARP)  : :8080"
     echo "  SS     (WARP)  : :8388"
@@ -747,10 +414,19 @@ cleanup() {
     for pid in "${INSTANCE_PIDS[@]}"; do
         sudo kill "$pid" 2>/dev/null || true
     done
+    kill "$ADMIN_PID" 2>/dev/null || true
     kill "$GOST_PID" 2>/dev/null || true
     wait
 }
 trap cleanup SIGTERM SIGINT
+
+# ---- start optional admin panel ----
+ADMIN_PID=""
+if [ "${ADMIN_ENABLED:-false}" = "true" ]; then
+    echo "Starting admin panel on :${ADMIN_PORT:-9090}"
+    python3 /admin/server.py &
+    ADMIN_PID=$!
+fi
 
 # ---- start GOST (foreground keeps container alive) ----
 if [ "$PROXY_MODE" = "dedicated" ]; then
@@ -758,7 +434,24 @@ if [ "$PROXY_MODE" = "dedicated" ]; then
 else
     echo "Starting GOST proxy (round-robin across ${READY_COUNT} instances)..."
 fi
-gost -C /tmp/gost-config.yaml &
-GOST_PID=$!
-
-wait $GOST_PID
+while true; do
+    gost -C /tmp/gost-config.yaml &
+    GOST_PID=$!
+    RESTART_REQUESTED=false
+    while kill -0 "$GOST_PID" 2>/dev/null; do
+        if [ -f "${GOST_RESTART_FILE:-/tmp/gost-restart-request}" ]; then
+            echo "Restarting GOST after admin config change..."
+            rm -f "${GOST_RESTART_FILE:-/tmp/gost-restart-request}"
+            kill "$GOST_PID" 2>/dev/null || true
+            wait "$GOST_PID" 2>/dev/null || true
+            RESTART_REQUESTED=true
+            break
+        fi
+        sleep 1
+    done
+    if [ "$RESTART_REQUESTED" = true ]; then
+        continue
+    fi
+    wait "$GOST_PID"
+    exit $?
+done

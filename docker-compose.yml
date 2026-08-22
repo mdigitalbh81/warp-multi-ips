@@ -5,6 +5,7 @@ services:
     restart: always
     ports:
       - "1080:1080"                            # SOCKS5 WARP proxy (Cloudflare IP)
+      # - "9090:9090"                          # Admin panel (enable with ADMIN_ENABLED=true)
       # - "1081:1081"                          # SOCKS5 Direct proxy (real IP)
       # - "8080:8080"                          # HTTP WARP proxy (Cloudflare IP)
       # - "8081:8081"                          # HTTP Direct proxy (real IP)
@@ -12,7 +13,7 @@ services:
       # - "8389:8389"                          # Shadowsocks Direct proxy (for mobile VPN)
     environment:
       # - WARP_INSTANCES=1                       # number of WARP instances (default: 1)
-                                                  # each instance gets a unique Cloudflare IP
+                                                  # Current Egress IPs are shared/dynamic Cloudflare addresses
                                                   # traffic is round-robined across all instances
       # - PROXY_MODE=round-robin                  # 'round-robin' (default) or 'dedicated'
                                                    # round-robin: all instances share ports 1080/8080/8388
@@ -26,6 +27,10 @@ services:
       # - PROXY_MAX_CONN=10                      # max concurrent connections per IP
       # - PROXY_MAX_RPS=50                       # max requests per second per IP
       # - SS_METHOD=chacha20-ietf-poly1305       # Shadowsocks encryption method
+      # - ADMIN_ENABLED=false                    # set true to start the web admin panel
+      # - ADMIN_PORT=9090                        # admin panel port inside the container
+      # - ADMIN_USER=admin                       # admin panel username
+      # - ADMIN_PASSWORD=change-me               # required when admin panel is enabled
     volumes:
       - warp-data:/var/lib/cloudflare-warp
 

@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WARP Multi IPs</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <h1>WARP Multi IPs</h1>
+        <p id="modeNote">Loading status...</p>
+      </div>
+      <div class="actions">
+        <button id="refreshBtn" type="button">Refresh Egress IPs</button>
+        <button id="settingsBtn" type="button" class="secondary">Settings</button>
+      </div>
+    </header>
+
+    <section class="metrics" aria-label="Summary">
+      <div>
+        <span>Configured instances</span>
+        <strong id="configuredInstances">-</strong>
+      </div>
+      <div>
+        <span>Healthy instances</span>
+        <strong id="healthyInstances">-</strong>
+      </div>
+      <div>
+        <span>Proxy mode</span>
+        <strong id="proxyMode">-</strong>
+      </div>
+      <div>
+        <span>Base port</span>
+        <strong id="basePort">-</strong>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Instance</th>
+              <th>Proxy</th>
+              <th>Internal endpoint</th>
+              <th>Current Egress IP</th>
+              <th>WARP</th>
+              <th>Process</th>
+              <th>GOST</th>
+              <th>Health</th>
+              <th>Last check</th>
+            </tr>
+          </thead>
+          <tbody id="instancesBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <dialog id="settingsDialog">
+      <form id="settingsForm" method="dialog">
+        <header class="dialog-head">
+          <h2>Settings</h2>
+          <button id="closeSettings" type="button" class="icon">x</button>
+        </header>
+
+        <div class="form-grid">
+          <label>
+            Proxy Mode
+            <select name="proxy_mode">
+              <option value="dedicated">Dedicated</option>
+              <option value="round-robin">Round Robin</option>
+            </select>
+          </label>
+          <label>
+            Number of Instances
+            <input name="instances" type="number" min="1" max="200" step="1" required>
+          </label>
+          <label>
+            Proxy Base Port
+            <input name="proxy_base_port" type="number" min="1" max="65535" step="1" required>
+          </label>
+          <label>
+            Proxy Max RPS
+            <input name="proxy_max_rps" type="number" min="1" max="100000" step="1" required>
+          </label>
+          <label>
+            WARP Connect Timeout
+            <input name="warp_connect_timeout" type="number" min="5" max="600" step="1" required>
+          </label>
+          <label>
+            Auto Refresh Interval
+            <input name="auto_refresh_interval" type="number" min="15" max="3600" step="1" required>
+          </label>
+        </div>
+
+        <p id="modeHelp" class="help"></p>
+
+        <fieldset>
+          <legend>Proxy Authentication</legend>
+          <label class="check">
+            <input name="proxy_auth_enabled" type="checkbox">
+            Enable authentication
+          </label>
+          <div class="form-grid">
+            <label>
+              Username
+              <input name="proxy_user" type="text" autocomplete="username">
+            </label>
+            <label>
+              Password
+              <input name="proxy_password" type="password" autocomplete="new-password" placeholder="Leave blank to keep current password">
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Administrator Account</legend>
+          <div class="form-grid">
+            <label>
+              Current username
+              <input name="admin_current_username" type="text" autocomplete="username" readonly>
+            </label>
+            <label>
+              New username
+              <input name="admin_new_username" type="text" autocomplete="username" placeholder="Leave blank to keep current username">
+            </label>
+            <label>
+              Current password
+              <input name="admin_current_password" type="password" autocomplete="current-password">
+            </label>
+            <label>
+              New password
+              <input name="admin_new_password" type="password" autocomplete="new-password">
+            </label>
+            <label>
+              Confirm password
+              <input name="admin_confirm_password" type="password" autocomplete="new-password">
+            </label>
+          </div>
+          <div class="account-actions">
+            <span id="adminAccountMessage"></span>
+            <button id="updateAdminAccount" type="button" class="secondary">Update Account</button>
+          </div>
+        </fieldset>
+
+        <div id="applyProgress" class="progress-box" hidden>
+          <div class="progress-meta">
+            <span id="progressLabel">Applying...</span>
+            <span id="progressPercent">0%</span>
+          </div>
+          <div class="progress-track">
+            <div id="progressBar"></div>
+          </div>
+        </div>
+
+        <footer class="dialog-actions">
+          <span id="settingsMessage"></span>
+          <button type="button" class="secondary" id="cancelSettings">Cancel</button>
+          <button type="submit">Apply</button>
+        </footer>
+      </form>
+    </dialog>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

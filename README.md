@@ -49,7 +49,7 @@ If working, you'll see `warp=on` in the output.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `WARP_INSTANCES` | Number of WARP instances. Each gets a unique Cloudflare IP. Traffic is round-robined across all instances. No extra capabilities required | `1` |
+| `WARP_INSTANCES` | Number of WARP instances. Current egress IPs are shared/dynamic Cloudflare addresses; dedicated mode guarantees port-to-instance mapping, not permanent IP assignment. No extra capabilities required | `1` |
 | `PROXY_MODE` | Proxy mode: `round-robin` (shared ports, IP rotation) or `dedicated` (one SOCKS5 port per instance) | `round-robin` |
 | `PROXY_BASE_PORT` | Base port for dedicated mode. Instance N listens on `PROXY_BASE_PORT + N`. Ignored in round-robin mode | `2080` |
 | `WARP_LICENSE_KEY` | WARP+ license key. Comma-separated for multiple keys — tries each in order, skips any that fail | - |
@@ -63,6 +63,12 @@ If working, you'll see `warp=on` in the output.
 | `PROXY_MAX_CONN` | Max concurrent connections per IP | `10` |
 | `PROXY_MAX_RPS` | Max requests per second per IP | `50` |
 | `SS_METHOD` | Shadowsocks encryption method | `chacha20-ietf-poly1305` |
+| `ADMIN_ENABLED` | Enable the protected web admin panel. When enabled for the first time, it imports env values into persistent admin config | `false` |
+| `ADMIN_PORT` | Admin panel port inside the container. Publish it explicitly in Compose only when needed | `9090` |
+| `ADMIN_USER` | Initial admin panel username. Used only to create persistent credentials on first startup | `admin` |
+| `ADMIN_PASSWORD` | Admin panel password. Required when `ADMIN_ENABLED=true` | - |
+| `ADMIN_MAX_INSTANCES` | Safety limit for instance count changes from the panel | `200` |
+| `AUTO_REFRESH_INTERVAL` | Seconds between cached Current Egress IP refreshes | `60` |
 
 ## With Authentication
 
@@ -139,7 +145,7 @@ curl -x http://myuser:mypassword@127.0.0.1:8081 https://ifconfig.me
 
 ## Multi-Instance (IP Rotation / Round-Robin)
 
-Set `WARP_INSTANCES=N` to run multiple WARP daemons in a single container, each with a unique Cloudflare IP. By default (`PROXY_MODE=round-robin`), traffic is round-robined across all instances on the same ports — no extra capabilities required.
+Set `WARP_INSTANCES=N` to run multiple WARP daemons in a single container. Current egress IPs are shared and dynamic Cloudflare addresses. By default (`PROXY_MODE=round-robin`), traffic is round-robined across all instances on the same ports — no extra capabilities required.
 
 ```yaml
 environment:
@@ -148,7 +154,9 @@ environment:
 
 Each instance uses ~50-100 MB RAM and starts 2 seconds apart. If an instance fails, GOST skips it after 3 failures and retries after 30s.
 
-## Dedicated Proxy Mode (1 Port per IP)
+## Dedicated Proxy Mode (1 Port per Instance)
+
+WARP egress addresses are Cloudflare shared/dynamic IPs. Dedicated mode guarantees a stable mapping from a SOCKS5 port to a specific local WARP instance; it does not guarantee a static or exclusive public IP.
 
 Set `PROXY_MODE=dedicated` to expose each WARP instance on its own SOCKS5 port. Every port is deterministically bound to one WARP instance — no round-robin, no IP rotation. Useful when you need to register each proxy independently in another system.
 
@@ -174,9 +182,9 @@ volumes:
 This produces:
 
 ```text
-port 2080 -> WARP instance 1 -> IP A
-port 2081 -> WARP instance 2 -> IP B
-port 2082 -> WARP instance 3 -> IP C
+port 2080 -> WARP instance 1 -> Current Egress IP A
+port 2081 -> WARP instance 2 -> Current Egress IP B
+port 2082 -> WARP instance 3 -> Current Egress IP C
 ```
 
 With 10 instances:
@@ -206,7 +214,7 @@ Or use the included test script to check all ports at once:
 ./scripts/test-dedicated.sh 3 2080
 ```
 
-Each port should consistently return the same IP across repeated requests. Two instances may occasionally receive the same Cloudflare exit IP — this is normal Cloudflare behavior, not an implementation bug. What matters is that each port is locked to its own WARP instance.
+Each port should consistently route to the same WARP instance. Two instances may receive the same Cloudflare exit IP, and an instance's Current Egress IP can change over time — this is normal Cloudflare behavior, not an implementation bug. What matters is that each dedicated port is locked to its own WARP instance.
 
 ### Notes on Dedicated Mode
 
@@ -214,6 +222,58 @@ Each port should consistently return the same IP across repeated requests. Two i
 - HTTP and Shadowsocks WARP proxies (`:8080`, `:8388`) are **not** created in dedicated mode — only SOCKS5 per-instance listeners are generated. Use the SOCKS5 port for each instance.
 - Proxy authentication (`PROXY_USER`/`PROXY_PASS`) applies to all dedicated ports.
 - Port conflicts with fixed service ports (1081, 8080, 8081, 8388, 8389) are detected at startup.
+
+## Web Admin Panel
+
+The admin panel is disabled by default and listens on a separate port only when explicitly enabled. It provides a dashboard, Current Egress IP refresh, settings, proxy authentication controls, and a small JSON API.
+
+`ADMIN_ENABLED=true` requires `ADMIN_PASSWORD` on first startup. The panel will not start with an implicit `admin/admin` password.
+
+```yaml
+services:
+  warp:
+    build:
+      context: .
+    ports:
+      - "2080-2089:2080-2089"
+      - "9090:9090"
+    environment:
+      - ADMIN_ENABLED=true
+      - ADMIN_PORT=9090
+      - ADMIN_USER=admin
+      - ADMIN_PASSWORD=change-me
+      - WARP_INSTANCES=10
+      - PROXY_MODE=dedicated
+      - PROXY_BASE_PORT=2080
+    volumes:
+      - warp-data:/var/lib/cloudflare-warp
+```
+
+Configuration precedence when `ADMIN_ENABLED=true`:
+
+1. On first startup, `/var/lib/cloudflare-warp/admin-config.json` is created from environment variables such as `WARP_INSTANCES`, `PROXY_MODE`, `PROXY_BASE_PORT`, `PROXY_MAX_RPS`, `WARP_CONNECT_TIMEOUT`, `AUTO_REFRESH_INTERVAL`, `PROXY_USER`, and `PROXY_PASS`.
+2. On first startup, `/var/lib/cloudflare-warp/admin-credentials.json` is created from `ADMIN_USER` and `ADMIN_PASSWORD`. Only a salted PBKDF2 password hash is stored.
+3. After those files exist, the persistent admin config and persistent admin credentials are the primary source. Changing the admin username or password in Settings survives container restarts.
+4. Environment variables still configure startup-only options that are not managed by the panel, such as WARP license or Zero Trust enrollment.
+
+The panel does not edit container environment variables at runtime. Increasing instances starts only the new WARP instance processes and regenerates the GOST config. Reducing instances stops only the removed WARP processes and keeps their persisted data for later reuse. Because a stable GOST config reload path is not used here, the panel restarts only the GOST process after config changes; existing `warp-svc` processes are left running.
+
+The panel uses HTTP Basic Authentication. After changing credentials, the old password is rejected immediately by the backend. Some browsers cache Basic Authentication credentials until the tab/browser is closed or a new login challenge is forced; that cache does not mean the old password remains valid on the server.
+
+Admin API:
+
+```text
+GET  /api/status
+GET  /api/instances
+GET  /api/config
+POST /api/config
+POST /api/admin/credentials
+POST /api/refresh
+POST /api/instances/refresh
+GET  /health
+```
+
+The dashboard labels WARP exits as `Current Egress IP` because Cloudflare WARP IPs are shared and dynamic. The guaranteed association in dedicated mode is `port -> WARP instance`.
 
 ## Zero Trust (Free WARP+ Routing)
 
