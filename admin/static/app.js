@@ -149,7 +149,6 @@ function buildInstanceRow(item) {
   const tr = document.createElement("tr");
   const host = item.proxy_host_omniroute || "";
   const port = String(item.proxy_port);
-  const hostPort = host ? `${host}:${port}` : "";
   const health = item.health || "unknown";
   const warpLabel = item.warp ? "ON" : "OFF";
 
@@ -196,14 +195,7 @@ function buildInstanceRow(item) {
     portBtn.addEventListener("click", () => copyText(port, portBtn));
     portRow.append(portLabel, portVal, portBtn);
 
-    // host:port button
-    const hpBtn = document.createElement("button");
-    hpBtn.type = "button";
-    hpBtn.className = "copy-hp-btn";
-    hpBtn.textContent = "Copy host:port";
-    hpBtn.addEventListener("click", () => copyText(hostPort, hpBtn));
-
-    tdProxy.append(hostRow, portRow, hpBtn);
+    tdProxy.append(hostRow, portRow);
   } else {
     tdProxy.textContent = "-";
   }

@@ -274,29 +274,6 @@ tr:last-child td {
   border-color: var(--green);
 }
 
-.copy-hp-btn {
-  min-height: 24px;
-  padding: 0 8px;
-  font-size: 11px;
-  font-weight: 600;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  color: var(--muted);
-  border-radius: 4px;
-  cursor: pointer;
-  margin-top: 2px;
-}
-
-.copy-hp-btn:hover {
-  color: var(--text);
-  border-color: var(--muted);
-}
-
-.copy-hp-btn.copied {
-  color: var(--green);
-  border-color: var(--green);
-}
-
 /* ── Notes cell ── */
 .note-cell {
   white-space: normal;
