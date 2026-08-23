@@ -26,6 +26,8 @@ ENV_FILE = Path(os.environ.get("WARP_ENV_FILE", "/tmp/warp-admin-env"))
 GOST_CONFIG_FILE = Path(os.environ.get("GOST_CONFIG_FILE", "/tmp/gost-config.yaml"))
 HEALTHY_PORTS_FILE = Path(os.environ.get("HEALTHY_PORTS_FILE", "/tmp/healthy-warp-ports"))
 GOST_RESTART_FILE = Path(os.environ.get("GOST_RESTART_FILE", "/tmp/gost-restart-request"))
+NOTES_FILE = Path(os.environ.get("ADMIN_NOTES_FILE", DATA_DIR / "instance-notes.json"))
+WATCHDOG_STATE_FILE = Path(os.environ.get("WATCHDOG_STATE_FILE", "/tmp/watchdog-state.json"))
 STATIC_DIR = Path(os.environ.get("ADMIN_STATIC_DIR", Path(__file__).resolve().parent / "static"))
 TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
 COMMON_SH = "/warp-common.sh"
@@ -57,6 +59,9 @@ CONFIG_LOCK = threading.RLock()
 CREDENTIALS_LOCK = threading.RLock()
 REFRESH_LOCK = threading.RLock()
 AUTH_RATE_LOCK = threading.RLock()
+NOTES_LOCK = threading.RLock()
+WATCHDOG_LOCK = threading.RLock()
+
 AUTH_FAILURES = {}
 STATE = {
     "egress": {},
@@ -64,6 +69,8 @@ STATE = {
     "last_refresh_started": None,
     "last_refresh_finished": None,
 }
+
+RECOVERY_LOCKS = {}   # per-instance threading.Lock for manual recovery
 
 
 def utc_now():
@@ -107,6 +114,185 @@ def write_secret_json(path, data):
         path.chmod(0o600)
     except PermissionError:
         subprocess.run(["sudo", "chmod", "600", str(path)], capture_output=True)
+
+
+
+def read_instance_notes():
+    """Read persistent per-instance notes."""
+    return read_json(NOTES_FILE, {})
+
+
+def write_instance_notes(notes):
+    """Persist per-instance notes.  Keys are string instance indices (0-based)."""
+    write_json_atomic(NOTES_FILE, notes)
+
+
+def get_instance_note(index):
+    """Return the note for a 0-based instance index, or empty string."""
+    notes = read_instance_notes()
+    return notes.get(str(index), "")
+
+
+def set_instance_note(index, note):
+    """Set the note for a 0-based instance index."""
+    with NOTES_LOCK:
+        notes = read_instance_notes()
+        note = (note or "").strip()
+        if note:
+            notes[str(index)] = note
+        else:
+            notes.pop(str(index), None)
+        write_instance_notes(notes)
+    return note
+
+
+def read_watchdog_state():
+    """Read the watchdog state JSON written by watchdog.sh."""
+    return read_json(WATCHDOG_STATE_FILE, {})
+
+
+def get_watchdog_instance(index):
+    """Return watchdog state for a 0-based instance index."""
+    state = read_watchdog_state()
+    instances = state.get("instances", {})
+    return instances.get(str(index), {})
+
+
+def get_recovery_lock(index):
+    """Get or create a per-instance recovery lock."""
+    with WATCHDOG_LOCK:
+        if index not in RECOVERY_LOCKS:
+            RECOVERY_LOCKS[index] = threading.Lock()
+        return RECOVERY_LOCKS[index]
+
+
+def manual_reconnect_instance(index):
+    """Attempt a light reconnect for a specific instance (manual trigger)."""
+    lock = get_recovery_lock(index)
+    if not lock.acquire(blocking=False):
+        return {"ok": False, "error": "recovery already in progress for this instance"}, 409
+    try:
+        run_dir = f"/run/warp-{index}"
+        dbus_sock = f"/run/dbus-{index}/system_bus_socket"
+        env = os.environ.copy()
+        env["RUNTIME_DIRECTORY"] = run_dir
+        env["DBUS_SYSTEM_BUS_ADDRESS"] = f"unix:path={dbus_sock}"
+        result = subprocess.run(
+            ["sudo", "env",
+             f"RUNTIME_DIRECTORY={run_dir}",
+             f"DBUS_SYSTEM_BUS_ADDRESS=unix:path={dbus_sock}",
+             "warp-cli", "--accept-tos", "connect"],
+            capture_output=True, text=True, timeout=30,
+        )
+        port = 40000 + index
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if port_open(port):
+                cfg = get_config(True)
+                try:
+                    trace = trace_for_proxy(port, cfg)
+                    if trace.get("warp") in ("on", "plus"):
+                        return {"ok": True, "message": f"instance {index + 1} reconnected"}, 200
+                except Exception:
+                    pass
+            time.sleep(3)
+        return {"ok": False, "error": f"instance {index + 1} reconnect timed out"}, 500
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}, 500
+    finally:
+        lock.release()
+
+
+def manual_restart_instance(index):
+    """Restart warp-svc for a specific instance (manual trigger)."""
+    lock = get_recovery_lock(index)
+    if not lock.acquire(blocking=False):
+        return {"ok": False, "error": "recovery already in progress for this instance"}, 409
+    try:
+        port = 40000 + index
+        data_dir = f"/var/lib/cloudflare-warp/instance-{index}"
+        run_dir = f"/run/warp-{index}"
+        dbus_dir = f"/run/dbus-{index}"
+        dbus_sock = f"{dbus_dir}/system_bus_socket"
+        pid_file = Path(f"/tmp/warp-instance-{index}.pid")
+
+        # Stop warp-svc
+        stop_instance(index)
+
+        # Ensure dirs
+        subprocess.run(["sudo", "mkdir", "-p", data_dir, run_dir, dbus_dir],
+                        capture_output=True)
+
+        # Restart D-Bus if needed
+        dbus_path = Path(dbus_sock)
+        if not dbus_path.exists():
+            subprocess.Popen(
+                ["sudo", "dbus-daemon",
+                 f"--address=unix:path={dbus_sock}",
+                 "--config-file=/usr/share/dbus-1/system.conf",
+                 "--nopidfile", "--nofork"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            time.sleep(1)
+
+        # Start warp-svc
+        proc = subprocess.Popen(
+            ["sudo", "env",
+             f"STATE_DIRECTORY={data_dir}",
+             f"RUNTIME_DIRECTORY={run_dir}",
+             f"DBUS_SYSTEM_BUS_ADDRESS=unix:path={dbus_sock}",
+             "warp-svc", "--accept-tos"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        pid_file.write_text(str(proc.pid))
+
+        # Wait for daemon ready
+        cfg = get_config(True)
+        timeout = cfg.get("warp_connect_timeout", 30)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            result = subprocess.run(
+                ["sudo", "env",
+                 f"RUNTIME_DIRECTORY={run_dir}",
+                 f"DBUS_SYSTEM_BUS_ADDRESS=unix:path={dbus_sock}",
+                 "warp-cli", "--accept-tos", "status"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0 and ("Status" in result.stdout or "Connected" in result.stdout):
+                break
+            time.sleep(2)
+
+        # Set proxy mode and connect
+        for cmd in [
+            ["mode", "proxy"],
+            ["proxy", "port", str(port)],
+            ["connect"],
+        ]:
+            subprocess.run(
+                ["sudo", "env",
+                 f"RUNTIME_DIRECTORY={run_dir}",
+                 f"DBUS_SYSTEM_BUS_ADDRESS=unix:path={dbus_sock}",
+                 "warp-cli", "--accept-tos"] + cmd,
+                capture_output=True, text=True, timeout=15,
+            )
+
+        # Verify
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if port_open(port):
+                try:
+                    trace = trace_for_proxy(port, cfg)
+                    if trace.get("warp") in ("on", "plus"):
+                        return {"ok": True, "message": f"instance {index + 1} restarted successfully"}, 200
+                except Exception:
+                    pass
+            time.sleep(3)
+
+        return {"ok": False, "error": f"instance {index + 1} restart did not restore connectivity"}, 500
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}, 500
+    finally:
+        lock.release()
 
 
 def parse_bool(value):
@@ -313,7 +499,12 @@ def read_env_file():
 def base_config():
     env = read_env_file()
     return {
-        "proxy_host": env.get("PROXY_HOST") or os.environ.get("PROXY_HOST", ""),
+        "proxy_host_omniroute": (
+            env.get("PROXY_HOST_OMNIROUTE")
+            or os.environ.get("PROXY_HOST_OMNIROUTE", "")
+            or env.get("PROXY_HOST")
+            or os.environ.get("PROXY_HOST", "")
+        ),
         "instances": int(env.get("WARP_INSTANCES") or os.environ.get("WARP_INSTANCES", "1")),
         "proxy_mode": env.get("PROXY_MODE") or os.environ.get("PROXY_MODE", "round-robin"),
         "proxy_base_port": int(env.get("PROXY_BASE_PORT") or os.environ.get("PROXY_BASE_PORT", "2080")),
@@ -336,7 +527,7 @@ def get_config(include_secret=False):
     cfg["warp_connect_timeout"] = int(cfg.get("warp_connect_timeout", 30))
     cfg["auto_refresh_interval"] = int(cfg.get("auto_refresh_interval", 60))
     cfg["proxy_auth_enabled"] = bool(cfg.get("proxy_auth_enabled", False))
-    cfg["proxy_host"] = cfg.get("proxy_host") or ""
+    cfg["proxy_host_omniroute"] = cfg.get("proxy_host_omniroute") or cfg.get("proxy_host") or ""
     cfg["proxy_user"] = cfg.get("proxy_user") or ""
     if include_secret:
         cfg["proxy_password"] = cfg.get("proxy_password") or ""
@@ -484,7 +675,7 @@ def trace_for_proxy(port, cfg):
 
 def refresh_instance(index, cfg):
     proxy_port = cfg["proxy_base_port"] + index if cfg["proxy_mode"] == "dedicated" else 1080
-    proxy_host = cfg.get("proxy_host") or ""
+    proxy_host = cfg.get("proxy_host_omniroute") or ""
     proxy_address = f"{proxy_host}:{proxy_port}" if proxy_host else ""
     now = time.time()
     if now - _CONTAINER_IPS_CACHE["ts"] > 30:
@@ -498,8 +689,8 @@ def refresh_instance(index, cfg):
         "internal_port": internal_port,
         "egress_ip": None,
         "warp": False,
-        "proxy_host": proxy_host,
-        "proxy_address": proxy_address,
+        "proxy_host_omniroute": proxy_host,
+        "proxy_address_omniroute": proxy_address,
         "container_ips": container_ips,
         "colo": None,
         "country_code": None,
@@ -509,6 +700,7 @@ def refresh_instance(index, cfg):
         "proxy_healthy": port_open(proxy_port),
         "listener_healthy": port_open(proxy_port),
         "internal_healthy": port_open(internal_port),
+        "note": get_instance_note(index),
         "last_check": utc_now(),
         "error": None,
     }
@@ -557,8 +749,8 @@ def refresh_all(force=False):
             results.setdefault(idx + 1, {
                 "instance": idx + 1,
                 "proxy_port": cfg["proxy_base_port"] + idx if cfg["proxy_mode"] == "dedicated" else 1080,
-                "proxy_host": cfg.get("proxy_host") or "",
-                "proxy_address": "",
+                "proxy_host_omniroute": cfg.get("proxy_host_omniroute") or "",
+                "proxy_address_omniroute": "",
                 "container_ips": [],
                 "internal_port": 40000 + idx,
                 "egress_ip": None,
@@ -582,7 +774,7 @@ def refresh_all(force=False):
 
 def get_instances():
     cfg = get_config(False)
-    proxy_host = cfg.get("proxy_host") or ""
+    proxy_host = cfg.get("proxy_host_omniroute") or ""
     container_ips = get_container_ips()
     now = time.time()
     last = STATE.get("last_refresh_finished")
@@ -600,13 +792,14 @@ def get_instances():
             "internal_port": 40000 + idx,
             "egress_ip": None,
             "warp": False,
-            "proxy_host": proxy_host,
-            "proxy_address": proxy_address,
+            "proxy_host_omniroute": proxy_host,
+            "proxy_address_omniroute": proxy_address,
             "container_ips": container_ips,
             "colo": None,
             "country_code": None,
             "country_name": None,
             "location": None,
+            "note": get_instance_note(idx),
             "process_healthy": instance_process_alive(idx),
             "proxy_healthy": port_open(cfg["proxy_base_port"] + idx if cfg["proxy_mode"] == "dedicated" else 1080),
             "listener_healthy": port_open(cfg["proxy_base_port"] + idx if cfg["proxy_mode"] == "dedicated" else 1080),
@@ -621,6 +814,31 @@ def get_instances():
                 item["health"] = "degraded"
             elif not item["process_healthy"] and not item["proxy_healthy"]:
                 item["health"] = "unavailable"
+        # Merge watchdog state
+        wd = get_watchdog_instance(idx)
+        if wd:
+            item["watchdog"] = {
+                "status": wd.get("status", ""),
+                "consecutive_failures": wd.get("consecutive_failures", 0),
+                "last_check": wd.get("last_check", ""),
+                "last_success": wd.get("last_success", ""),
+                "last_failure": wd.get("last_failure", ""),
+                "last_reconnect": wd.get("last_reconnect", ""),
+                "last_restart": wd.get("last_restart", ""),
+                "reconnect_count": wd.get("reconnect_count", 0),
+                "restart_count": wd.get("restart_count", 0),
+                "recovery_status": wd.get("recovery_status", "none"),
+                "last_error": wd.get("last_error", ""),
+                "previous_egress": wd.get("previous_egress", ""),
+                "current_egress": wd.get("current_egress", ""),
+                "last_egress_change": wd.get("last_egress_change", ""),
+            }
+            # Use watchdog health status if available and more specific
+            wd_status = wd.get("status", "")
+            if wd_status in ("recovering", "offline", "degraded"):
+                item["health"] = wd_status
+        else:
+            item["watchdog"] = None
         items.append(item)
     return items
 
@@ -921,6 +1139,8 @@ class Handler(SimpleHTTPRequestHandler):
                 "operation": STATE.get("operation"),
                 "last_refresh": STATE.get("last_refresh_finished"),
             })
+        elif parsed.path == "/api/watchdog":
+            self.send_json(read_watchdog_state())
         else:
             if not self.require_auth():
                 return
@@ -945,7 +1165,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "instances",
                 "proxy_mode",
                 "proxy_base_port",
-                "proxy_host",
+                "proxy_host_omniroute",
                 "proxy_max_rps",
                 "warp_connect_timeout",
                 "auto_refresh_interval",
@@ -975,6 +1195,62 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             response, status = update_admin_credentials(body)
             self.send_json(response, status)
+            return
+        # POST /api/instances/{id}/reconnect
+        m = re.match(r"^/api/instances/(\d+)/reconnect$", parsed.path)
+        if m:
+            instance_id = int(m.group(1))
+            cfg = get_config(False)
+            if instance_id < 1 or instance_id > cfg["instances"]:
+                self.send_json({"ok": False, "errors": ["instance not found"]}, 404)
+                return
+            index = instance_id - 1
+            def do_reconnect():
+                return manual_reconnect_instance(index)
+            response, status = do_reconnect()
+            self.send_json(response, status)
+            return
+        # POST /api/instances/{id}/restart
+        m = re.match(r"^/api/instances/(\d+)/restart$", parsed.path)
+        if m:
+            instance_id = int(m.group(1))
+            cfg = get_config(False)
+            if instance_id < 1 or instance_id > cfg["instances"]:
+                self.send_json({"ok": False, "errors": ["instance not found"]}, 404)
+                return
+            index = instance_id - 1
+            response, status = manual_restart_instance(index)
+            self.send_json(response, status)
+            return
+        self.send_json({"error": "not found"}, 404)
+
+    def do_PATCH(self):
+        parsed = urlparse(self.path)
+        if not self.require_auth():
+            return
+        # PATCH /api/instances/{id}/note
+        import re as _re
+        m = _re.match(r"^/api/instances/(\d+)/note$", parsed.path)
+        if m:
+            instance_id = int(m.group(1))
+            cfg = get_config(False)
+            if instance_id < 1 or instance_id > cfg["instances"]:
+                self.send_json({"ok": False, "errors": ["instance not found"]}, 404)
+                return
+            try:
+                body = self.read_body()
+            except BadRequest as exc:
+                self.send_json({"ok": False, "errors": [str(exc)]}, 400)
+                return
+            note_text = body.get("note", "")
+            if not isinstance(note_text, str):
+                self.send_json({"ok": False, "errors": ["note must be a string"]}, 400)
+                return
+            if len(note_text) > 500:
+                self.send_json({"ok": False, "errors": ["note must be 500 characters or fewer"]}, 400)
+                return
+            saved = set_instance_note(instance_id - 1, note_text)
+            self.send_json({"ok": True, "instance": instance_id, "note": saved})
             return
         self.send_json({"error": "not found"}, 404)
 

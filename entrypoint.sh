@@ -17,7 +17,8 @@ PROXY_BASE_PORT=${PROXY_BASE_PORT:-2080}
 PROXY_MAX_RPS=${PROXY_MAX_RPS:-50}
 WARP_CONNECT_TIMEOUT=${WARP_CONNECT_TIMEOUT:-30}
 AUTO_REFRESH_INTERVAL=${AUTO_REFRESH_INTERVAL:-60}
-PROXY_HOST=${PROXY_HOST:-}
+# PROXY_HOST_OMNIROUTE (preferred) with PROXY_HOST fallback (deprecated)
+PROXY_HOST_OMNIROUTE=${PROXY_HOST_OMNIROUTE:-${PROXY_HOST:-}}
 
 init_admin_config
 load_admin_config
@@ -417,9 +418,22 @@ cleanup() {
     done
     kill "$ADMIN_PID" 2>/dev/null || true
     kill "$GOST_PID" 2>/dev/null || true
+    kill "$WATCHDOG_PID" 2>/dev/null || true
     wait
 }
 trap cleanup SIGTERM SIGINT
+
+# ---- start optional admin panel ----
+
+# ---- start watchdog (multi-instance only) ----
+WATCHDOG_PID=""
+if [ "$WARP_INSTANCES" -gt 1 ] && [ "${WARP_WATCHDOG_ENABLED:-true}" = "true" ]; then
+    echo "Starting watchdog for ${WARP_INSTANCES} instances..."
+    /watchdog.sh &
+    WATCHDOG_PID=$!
+elif [ "$WARP_INSTANCES" -gt 1 ]; then
+    echo "Watchdog disabled (WARP_WATCHDOG_ENABLED=false)"
+fi
 
 # ---- start optional admin panel ----
 ADMIN_PID=""

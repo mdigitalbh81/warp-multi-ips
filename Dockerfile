@@ -19,6 +19,7 @@ LABEL COMMIT_SHA=${COMMIT_SHA}
 COPY entrypoint.sh /entrypoint.sh
 COPY start-warp-instance.sh /start-warp-instance.sh
 COPY warp-common.sh /warp-common.sh
+COPY watchdog.sh /watchdog.sh
 COPY admin /admin
 COPY ./healthcheck /healthcheck
 
@@ -54,6 +55,7 @@ RUN if [ -n "${TARGETPLATFORM}" ]; then \
     chmod +x /entrypoint.sh && \
     chmod +x /start-warp-instance.sh && \
     chmod +x /warp-common.sh && \
+    chmod +x /watchdog.sh && \
     chmod +x /admin/server.py && \
     chmod +x /healthcheck/index.sh && \
     useradd -m -s /bin/bash warp && \
@@ -80,6 +82,11 @@ ENV ADMIN_USER=admin
 ENV ADMIN_PASSWORD=
 ENV ADMIN_MAX_INSTANCES=200
 ENV AUTO_REFRESH_INTERVAL=60
+ENV WARP_WATCHDOG_ENABLED=true
+ENV WARP_WATCHDOG_INTERVAL=30
+ENV WARP_WATCHDOG_FAILURE_THRESHOLD=3
+ENV WARP_WATCHDOG_RECOVERY_TIMEOUT=30
+ENV WARP_WATCHDOG_RESTART_COOLDOWN=120
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=120s --retries=3 \
   CMD /healthcheck/index.sh

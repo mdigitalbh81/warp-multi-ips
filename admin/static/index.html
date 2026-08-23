@@ -44,13 +44,21 @@
           <thead>
             <tr>
               <th>Instance</th>
-              <th><span class="th-tip" title="Address that clients use to connect to the SOCKS5 proxy">Proxy Address</span></th>
-              <th>Container IP</th>
+              <th><span class="th-tip" title="IP/hostname that OmniRoute uses to access the SOCKS5 ports">OmniRoute Proxy</span></th>
+              <th>Internal Endpoint</th>
               <th><span class="th-tip" title="Public address currently used by Cloudflare WARP for outbound traffic">Current Egress IP</span></th>
               <th>Country</th>
               <th>Colo</th>
+              <th>Notes</th>
               <th>WARP</th>
               <th>Health</th>
+              <th>Recovery</th>
+              <th><span class="th-tip" title="Consecutive health-check failures">Failures</span></th>
+              <th>Reconnects</th>
+              <th>Restarts</th>
+              <th><span class="th-tip" title="Timestamp of last health check">Last Check</span></th>
+              <th><span class="th-tip" title="Timestamp of last recovery action">Last Recovery</span></th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody id="instancesBody"></tbody>
@@ -82,8 +90,8 @@
             <input name="proxy_base_port" type="number" min="1" max="65535" step="1" required>
           </label>
           <label>
-            Proxy Host
-            <input name="proxy_host" type="text" placeholder="e.g. 10.0.0.254 or proxy.example.com">
+            OmniRoute Proxy Host
+            <input name="proxy_host_omniroute" type="text" placeholder="e.g. 10.0.0.254 or proxy.example.com">
           </label>
           <label>
             Proxy Max RPS

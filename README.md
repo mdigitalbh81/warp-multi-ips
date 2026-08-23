@@ -52,7 +52,8 @@ If working, you'll see `warp=on` in the output.
 | `WARP_INSTANCES` | Number of WARP instances. Current egress IPs are shared/dynamic Cloudflare addresses; dedicated mode guarantees port-to-instance mapping, not permanent IP assignment. No extra capabilities required | `1` |
 | `PROXY_MODE` | Proxy mode: `round-robin` (shared ports, IP rotation) or `dedicated` (one SOCKS5 port per instance) | `round-robin` |
 | `PROXY_BASE_PORT` | Base port for dedicated mode. Instance N listens on `PROXY_BASE_PORT + N`. Ignored in round-robin mode | `2080` |
-| `PROXY_HOST` | Host or IP that clients use to reach the proxy (e.g. `10.0.0.254`, `proxy.example.com`). Used by the admin dashboard to display Proxy Address. Does not change proxy binding | - |
+| `PROXY_HOST_OMNIROUTE` | Host or IP that OmniRoute uses to reach the SOCKS5 proxy ports (e.g. `10.0.0.254`, `proxy.example.com`). Displayed in the admin dashboard as OmniRoute Proxy. Does not change proxy binding | - |
+| `PROXY_HOST` | **Deprecated.** Fallback for `PROXY_HOST_OMNIROUTE` when the new variable is not set | - |
 | `WARP_LICENSE_KEY` | WARP+ license key. Comma-separated for multiple keys — tries each in order, skips any that fail | - |
 | `WARP_ORG` | Zero Trust team name. Enables automatic enrollment via service token (see [Zero Trust](#zero-trust-free-warp-routing) section). Mutually exclusive with `WARP_LICENSE_KEY` | - |
 | `WARP_AUTH_CLIENT_ID` | Service token Client ID (required when `WARP_ORG` is set) | - |
@@ -261,6 +262,10 @@ The panel does not edit container environment variables at runtime. Increasing i
 
 The panel uses HTTP Basic Authentication. After changing credentials, the old password is rejected immediately by the backend. Some browsers cache Basic Authentication credentials until the tab/browser is closed or a new login challenge is forced; that cache does not mean the old password remains valid on the server.
 
+### Instance Notes
+
+Each instance supports a free-text note (up to 500 characters). Notes are stored in `instance-notes.json` on the persistent volume, keyed by 0-based instance index. They survive container restarts, egress IP changes, and `WARP_INSTANCES` scaling. When instances are removed and later re-added, previously saved notes for those indices are preserved.
+
 Security notes before publishing the admin panel:
 
 - Do not publish the admin panel directly over plain HTTP. Use HTTPS through a reverse proxy.
@@ -279,6 +284,7 @@ POST /api/config
 POST /api/admin/credentials
 POST /api/refresh
 POST /api/instances/refresh
+PATCH /api/instances/{id}/note
 GET  /health
 ```
 
@@ -290,19 +296,19 @@ The admin dashboard and API expose several address fields. Each serves a differe
 
 | Term | Meaning |
 |------|---------|
-| **Proxy Host / Proxy Address** | The host and port a client connects to in order to use the SOCKS5 proxy. Set via `PROXY_HOST` and `PROXY_BASE_PORT`. Example: `10.0.0.254:2080`. This is the address you configure in browsers, scrapers, or downstream services |
+| **OmniRoute Proxy Host / OmniRoute Proxy Address** | The host and port that OmniRoute uses to connect to each SOCKS5 instance. Set via `PROXY_HOST_OMNIROUTE` (or the deprecated `PROXY_HOST`) and `PROXY_BASE_PORT`. Example: `10.0.0.254:2080`. This is the address you configure in OmniRoute, browsers, or downstream services |
 | **Container IP** | The IPv4 address(es) of the Docker container's network interfaces (excluding loopback). Informational only. When the container has multiple Docker networks attached, all non-loopback addresses are listed |
 | **Current Egress IP** | The public IP address that remote servers see when traffic exits through Cloudflare WARP. This is a shared, dynamic Cloudflare address and may change at any time. It is **not** the address clients connect to |
 
 Example dashboard row:
 
 ```text
-Instance | Proxy Address    | Container IP | Current Egress IP | Country | Colo | WARP | Health
-1        | 10.0.0.254:2080  | 10.11.10.54  | 2a09:bac5:...     | Brazil  | GRU  | ON   | Healthy
-2        | 10.0.0.254:2081  | 10.11.10.54  | 2a09:bac5:...     | Brazil  | GRU  | ON   | Healthy
+Instance | OmniRoute Proxy  | Internal Endpoint | Current Egress IP | Country | Colo | Notes              | WARP | Health
+1        | 10.0.0.254:2080  | 127.0.0.1:40000   | 2a09:bac5:...     | Brazil  | GRU  | conta1@gmail.com   | ON   | Healthy
+2        | 10.0.0.254:2081  | 127.0.0.1:40001   | 2a09:bac5:...     | Brazil  | GRU  | conta2@gmail.com   | ON   | Healthy
 ```
 
-The API endpoint `GET /api/instances` returns `proxy_host`, `proxy_address`, `container_ips`, `egress_ip`, `country_code`, `country_name`, and `colo` for each instance.
+The API endpoint `GET /api/instances` returns `proxy_host_omniroute`, `proxy_address_omniroute`, `container_ips`, `egress_ip`, `country_code`, `country_name`, `colo`, and `note` for each instance. Notes can be updated via `PATCH /api/instances/{id}/note`.
 
 ## Zero Trust (Free WARP+ Routing)
 

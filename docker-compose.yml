@@ -19,7 +19,8 @@ services:
                                                    # round-robin: all instances share ports 1080/8080/8388
                                                    # dedicated: each instance gets its own SOCKS5 port
       # - PROXY_BASE_PORT=2080                    # base port for dedicated mode (port = base + instance)
-      # - PROXY_HOST=                               # host/IP clients use to reach the proxy (e.g. 10.0.0.254)
+      # - PROXY_HOST_OMNIROUTE=                      # host/IP OmniRoute uses to reach the SOCKS5 ports (e.g. 10.0.0.254)
+      # - PROXY_HOST=                               # deprecated: use PROXY_HOST_OMNIROUTE instead
       # - WARP_LICENSE_KEY=your-key              # WARP+ license key (comma-separated for multiple)
       # - WARP_CONNECT_TIMEOUT=30                # max seconds to wait for WARP daemon
       # - PROXY_USER=myuser                      # proxy authentication username
@@ -32,6 +33,11 @@ services:
       # - ADMIN_PORT=9090                        # admin panel port inside the container
       # - ADMIN_USER=admin                       # admin panel username
       # - ADMIN_PASSWORD=change-me               # required when admin panel is enabled
+      # - WARP_WATCHDOG_ENABLED=true              # enable per-instance health watchdog
+      # - WARP_WATCHDOG_INTERVAL=30               # seconds between health checks
+      # - WARP_WATCHDOG_FAILURE_THRESHOLD=3        # consecutive failures before recovery
+      # - WARP_WATCHDOG_RECOVERY_TIMEOUT=30        # seconds to wait for recovery
+      # - WARP_WATCHDOG_RESTART_COOLDOWN=120       # seconds between restarts per instance
     volumes:
       - warp-data:/var/lib/cloudflare-warp
 

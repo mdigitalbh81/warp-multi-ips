@@ -25,7 +25,7 @@ body {
 }
 
 .shell {
-  width: min(1180px, calc(100vw - 32px));
+  width: min(1320px, calc(100vw - 32px));
   margin: 0 auto;
   padding: 32px 0;
 }
@@ -102,6 +102,24 @@ button.icon {
   color: var(--muted);
 }
 
+.action-btn {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  margin-right: 6px;
+}
+
+.rest-btn {
+  background: var(--red);
+  color: #fff;
+}
+
+.date-cell {
+  font-size: 11px;
+}
+
 .metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -111,15 +129,6 @@ button.icon {
 
 .metrics div,
 .panel,
-.th-tip {
-  cursor: help;
-  border-bottom: 1px dotted var(--muted);
-}
-
-.th-tip[title] {
-  position: relative;
-}
-
 dialog {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -152,7 +161,7 @@ dialog {
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 1080px;
+  min-width: 1180px;
 }
 
 th,
@@ -214,15 +223,122 @@ tr:last-child td {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
+/* Tooltip-style column headers */
 .th-tip {
   cursor: help;
   border-bottom: 1px dotted var(--muted);
 }
 
-.th-tip[title] {
-  position: relative;
+/* ── OmniRoute Proxy cell: copy rows ── */
+.proxy-cell {
+  white-space: normal;
+  min-width: 170px;
 }
 
+.copy-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
+.copy-label {
+  color: var(--muted);
+  font-size: 11px;
+  min-width: 32px;
+}
+
+.copy-val {
+  flex: 1;
+}
+
+.copy-btn {
+  min-height: 24px;
+  padding: 0 5px;
+  font-size: 13px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.copy-btn:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.copy-btn.copied {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+.copy-hp-btn {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 4px;
+  cursor: pointer;
+  margin-top: 2px;
+}
+
+.copy-hp-btn:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.copy-hp-btn.copied {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+/* ── Notes cell ── */
+.note-cell {
+  white-space: normal;
+  min-width: 160px;
+  max-width: 260px;
+}
+
+.note-text {
+  color: var(--text);
+  word-break: break-word;
+}
+
+.note-edit-btn,
+.note-save-btn {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 4px;
+  cursor: pointer;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.note-edit-btn:hover,
+.note-save-btn:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.note-input {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 13px;
+  width: 140px;
+  border-radius: 4px;
+}
+
+/* ── Dialog ── */
 dialog {
   width: min(720px, calc(100vw - 32px));
   padding: 0;
