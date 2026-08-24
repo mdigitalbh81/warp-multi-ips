@@ -53,6 +53,10 @@ class ProxyHostPrecedenceTests(unittest.TestCase):
     def write_config(self, data):
         (self.tmp / "admin-config.json").write_text(json.dumps(data))
 
+    def write_env(self, data):
+        lines = [f"{key}={value}" for key, value in data.items()]
+        (self.tmp / "warp-env").write_text("\n".join(lines))
+
     def test_persistent_empty_env_filled_uses_env(self):
         self.write_config({"proxy_host_omniroute": ""})
         server = load_server(self.tmp)
@@ -76,6 +80,46 @@ class ProxyHostPrecedenceTests(unittest.TestCase):
         server = load_server(self.tmp)
         with proxy_host_env(""):
             self.assertEqual(server.get_config()["proxy_host_omniroute"], "")
+
+    def test_cached_proxy_fields_do_not_override_current_config(self):
+        self.write_env({
+            "PROXY_HOST_OMNIROUTE": "omniroute_warp-proxy",
+            "PROXY_BASE_PORT": "2080",
+            "PROXY_MODE": "dedicated",
+            "WARP_INSTANCES": "10",
+        })
+        server = load_server(self.tmp)
+        server.get_container_ips = lambda: []
+        server.port_open = lambda port: False
+        server.instance_process_alive = lambda index: False
+        server.get_instance_note = lambda index: ""
+        server.get_watchdog_instance = lambda index: {}
+        server.STATE["last_refresh_finished"] = server.time.time()
+        server.STATE["egress"] = {
+            1: {
+                "proxy_host_omniroute": "",
+                "proxy_address_omniroute": "",
+                "proxy_port": 9999,
+                "health": "healthy",
+                "egress_ip": "198.51.100.1",
+            },
+            10: {
+                "proxy_host_omniroute": "",
+                "proxy_address_omniroute": "",
+                "proxy_port": 9999,
+                "health": "healthy",
+                "egress_ip": "198.51.100.10",
+            },
+        }
+
+        instances = server.get_instances()
+
+        self.assertEqual(instances[0]["proxy_host_omniroute"], "omniroute_warp-proxy")
+        self.assertEqual(instances[0]["proxy_port"], 2080)
+        self.assertEqual(instances[0]["proxy_address_omniroute"], "omniroute_warp-proxy:2080")
+        self.assertEqual(instances[9]["proxy_host_omniroute"], "omniroute_warp-proxy")
+        self.assertEqual(instances[9]["proxy_port"], 2089)
+        self.assertEqual(instances[9]["proxy_address_omniroute"], "omniroute_warp-proxy:2089")
 
 
 if __name__ == "__main__":

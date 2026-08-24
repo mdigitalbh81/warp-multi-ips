@@ -818,6 +818,9 @@ def get_instances():
             "error": None,
         }
         item.update(existing)
+        item["proxy_port"] = proxy_port
+        item["proxy_host_omniroute"] = proxy_host
+        item["proxy_address_omniroute"] = proxy_address
         if item["health"] == "unknown":
             if item["process_healthy"] and item["proxy_healthy"]:
                 item["health"] = "degraded"
