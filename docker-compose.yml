@@ -1,45 +1,38 @@
 services:
   warp:
-    image: dublok/cloudflare-warp:latest
-    container_name: warp
-    restart: always
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
     ports:
-      - "1080:1080"                            # SOCKS5 WARP proxy (Cloudflare IP)
-      # - "9090:9090"                          # Admin panel (enable with ADMIN_ENABLED=true)
-      # - "1081:1081"                          # SOCKS5 Direct proxy (real IP)
-      # - "8080:8080"                          # HTTP WARP proxy (Cloudflare IP)
-      # - "8081:8081"                          # HTTP Direct proxy (real IP)
-      # - "8388:8388"                          # Shadowsocks WARP proxy (for mobile VPN)
-      # - "8389:8389"                          # Shadowsocks Direct proxy (for mobile VPN)
+      - "2080-2089:2080-2089"
     environment:
-      # - WARP_INSTANCES=1                       # number of WARP instances (default: 1)
-                                                  # Current Egress IPs are shared/dynamic Cloudflare addresses
-                                                  # traffic is round-robined across all instances
-      # - PROXY_MODE=round-robin                  # 'round-robin' (default) or 'dedicated'
-                                                   # round-robin: all instances share ports 1080/8080/8388
-                                                   # dedicated: each instance gets its own SOCKS5 port
-      # - PROXY_BASE_PORT=2080                    # base port for dedicated mode (port = base + instance)
-      # - PROXY_HOST_OMNIROUTE=                      # host/IP OmniRoute uses to reach the SOCKS5 ports (e.g. 10.0.0.254)
-      # - PROXY_HOST=                               # deprecated: use PROXY_HOST_OMNIROUTE instead
-      # - WARP_LICENSE_KEY=your-key              # WARP+ license key (comma-separated for multiple)
-      # - WARP_CONNECT_TIMEOUT=30                # max seconds to wait for WARP daemon
-      # - PROXY_USER=myuser                      # proxy authentication username
-      # - PROXY_PASS=mypassword                  # proxy authentication password
-      # - PROXY_ALLOWED_IPS=192.168.1.0/24       # IP whitelist (comma-separated CIDRs)
-      # - PROXY_MAX_CONN=10                      # max concurrent connections per IP
-      # - PROXY_MAX_RPS=50                       # max requests per second per IP
-      # - SS_METHOD=chacha20-ietf-poly1305       # Shadowsocks encryption method
-      # - ADMIN_ENABLED=false                    # set true to start the web admin panel
-      # - ADMIN_PORT=9090                        # admin panel port inside the container
-      # - ADMIN_USER=admin                       # admin panel username
-      # - ADMIN_PASSWORD=change-me               # required when admin panel is enabled
-      # - WARP_WATCHDOG_ENABLED=true              # enable per-instance health watchdog
-      # - WARP_WATCHDOG_INTERVAL=30               # seconds between health checks
-      # - WARP_WATCHDOG_FAILURE_THRESHOLD=3        # consecutive failures before recovery
-      # - WARP_WATCHDOG_RECOVERY_TIMEOUT=30        # seconds to wait for recovery
-      # - WARP_WATCHDOG_RESTART_COOLDOWN=120       # seconds between restarts per instance
+      WARP_INSTANCES: "10"
+      PROXY_MODE: "dedicated"
+      PROXY_BASE_PORT: "2080"
+      PROXY_MAX_RPS: "50"
+      WARP_CONNECT_TIMEOUT: "90"
+      ADMIN_ENABLED: "true"
+      ADMIN_PORT: "9090"
+      ADMIN_USER: "${ADMIN_USER}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
+      PROXY_HOST_OMNIROUTE: "${PROXY_HOST_OMNIROUTE}"
     volumes:
       - warp-data:/var/lib/cloudflare-warp
+    networks:
+      default:
+      easypanel:
+        aliases:
+          - omniroute_warp-proxy
+          - omniroute_warp-proxy_undefined
 
 volumes:
   warp-data:
+
+networks:
+  easypanel:
+    external: true

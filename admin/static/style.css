@@ -25,7 +25,8 @@ body {
 }
 
 .shell {
-  width: min(1320px, calc(100vw - 32px));
+  width: calc(100% - 32px);
+  max-width: none;
   margin: 0 auto;
   padding: 32px 0;
 }
@@ -161,7 +162,7 @@ dialog {
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 1180px;
+  min-width: 860px;
 }
 
 th,
@@ -229,12 +230,48 @@ tr:last-child td {
   border-bottom: 1px dotted var(--muted);
 }
 
-/* ── OmniRoute Proxy cell: copy rows ── */
+/* -- OmniRoute Proxy cell -- */
 .proxy-cell {
   white-space: normal;
   min-width: 170px;
 }
 
+.proxy-address {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.proxy-address-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+}
+
+.copy-inline-btn {
+  min-height: 22px;
+  min-width: 22px;
+  padding: 0 4px;
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.copy-inline-btn:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.copy-inline-btn.copied {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+/* Legacy copy-row kept for compat */
 .copy-row {
   display: flex;
   align-items: center;
@@ -274,7 +311,7 @@ tr:last-child td {
   border-color: var(--green);
 }
 
-/* ── Notes cell ── */
+/* -- Notes cell -- */
 .note-cell {
   white-space: normal;
   min-width: 160px;
@@ -315,7 +352,57 @@ tr:last-child td {
   border-radius: 4px;
 }
 
-/* ── Dialog ── */
+/* -- Expandable details row -- */
+.details-row td {
+  padding: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.details-inner {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px 20px;
+  padding: 12px 14px;
+  background: var(--panel-2);
+}
+
+.details-inner .detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.detail-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.detail-value {
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  color: var(--text);
+}
+
+.expand-btn {
+  min-height: 24px;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 4px;
+  cursor: pointer;
+  margin-right: 6px;
+}
+
+.expand-btn:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+/* -- Dialog -- */
 dialog {
   width: min(720px, calc(100vw - 32px));
   padding: 0;
@@ -444,6 +531,131 @@ legend {
   margin-right: auto;
 }
 
+/* -- Export dialog -- */
+#exportDialog {
+  width: min(800px, calc(100vw - 32px));
+}
+
+.export-content {
+  padding: 20px;
+}
+
+.export-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.export-meta strong {
+  color: var(--text);
+}
+
+#exportText {
+  width: 100%;
+  min-height: 180px;
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  background: #0e1117;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  resize: vertical;
+}
+
+.export-error {
+  padding: 12px;
+  margin-bottom: 14px;
+  background: rgba(240, 93, 94, 0.12);
+  border: 1px solid var(--red);
+  border-radius: 8px;
+  color: var(--red);
+  font-size: 14px;
+}
+
+.export-warning {
+  padding: 12px;
+  margin-bottom: 14px;
+  background: rgba(242, 185, 75, 0.12);
+  border: 1px solid var(--yellow);
+  border-radius: 8px;
+  color: var(--yellow);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+#exportMessage {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* -- Mobile cards -- */
+.mobile-cards {
+  display: none;
+}
+
+.mobile-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 10px;
+}
+
+.mobile-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.mobile-card-head strong {
+  font-size: 16px;
+}
+
+.mobile-card-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 0;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.mobile-card-row:last-child {
+  border-bottom: 0;
+}
+
+.mobile-card-label {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.mobile-card-value {
+  text-align: right;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.mobile-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.mobile-card-details {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+/* -- Responsive -- */
 @media (max-width: 760px) {
   .topbar {
     align-items: flex-start;
@@ -453,5 +665,20 @@ legend {
   .metrics,
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  /* Hide table, show cards on mobile */
+  .panel {
+    display: none;
+  }
+
+  .mobile-cards {
+    display: block;
+  }
+}
+
+@media (min-width: 761px) {
+  .mobile-cards {
+    display: none !important;
   }
 }

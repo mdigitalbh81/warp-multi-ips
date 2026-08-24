@@ -72,6 +72,7 @@ const state = {
   config: null,
   status: null,
   instances: [],
+  expandedRows: new Set(),
 };
 
 const els = {
@@ -82,6 +83,7 @@ const els = {
   modeNote: document.querySelector("#modeNote"),
   instancesBody: document.querySelector("#instancesBody"),
   refreshBtn: document.querySelector("#refreshBtn"),
+  exportBtn: document.querySelector("#exportBtn"),
   settingsBtn: document.querySelector("#settingsBtn"),
   settingsDialog: document.querySelector("#settingsDialog"),
   settingsForm: document.querySelector("#settingsForm"),
@@ -95,6 +97,16 @@ const els = {
   progressBar: document.querySelector("#progressBar"),
   updateAdminAccount: document.querySelector("#updateAdminAccount"),
   adminAccountMessage: document.querySelector("#adminAccountMessage"),
+  exportDialog: document.querySelector("#exportDialog"),
+  exportText: document.querySelector("#exportText"),
+  exportMeta: document.querySelector("#exportMeta"),
+  exportError: document.querySelector("#exportError"),
+  exportAuthWarning: document.querySelector("#exportAuthWarning"),
+  exportCopy: document.querySelector("#exportCopy"),
+  exportDownload: document.querySelector("#exportDownload"),
+  exportMessage: document.querySelector("#exportMessage"),
+  closeExport: document.querySelector("#closeExport"),
+  mobileCards: document.querySelector("#mobileCards"),
 };
 
 let progressTimer = null;
@@ -144,87 +156,99 @@ function renderSummary() {
     : "Round-robin mode can alternate connections between healthy WARP instances.";
 }
 
+// Build the expandable details row
+function buildDetailsRow(item, colSpan) {
+  const wd = item.watchdog || {};
+  const tr = document.createElement("tr");
+  tr.className = "details-row";
+  const td = document.createElement("td");
+  td.colSpan = colSpan;
+  const inner = document.createElement("div");
+  inner.className = "details-inner";
+
+  const details = [
+    { label: "Internal WARP Endpoint", value: `127.0.0.1:${item.internal_port}` },
+    { label: "Recovery", value: (wd.recovery_status || "none") === "none" ? "-" : wd.recovery_status },
+    { label: "Failures", value: wd.consecutive_failures !== undefined ? wd.consecutive_failures : "-" },
+    { label: "Reconnects", value: wd.reconnect_count !== undefined ? wd.reconnect_count : "-" },
+    { label: "Restarts", value: wd.restart_count !== undefined ? wd.restart_count : "-" },
+    { label: "Last Check", value: wd.last_check ? new Date(wd.last_check).toLocaleString() : "-" },
+    { label: "Last Recovery", value: (wd.last_reconnect || wd.last_restart) ? new Date(wd.last_reconnect || wd.last_restart).toLocaleString() : "-" },
+  ];
+
+  for (const d of details) {
+    const div = document.createElement("div");
+    div.className = "detail-item";
+    const lbl = document.createElement("span");
+    lbl.className = "detail-label";
+    lbl.textContent = d.label;
+    const val = document.createElement("span");
+    val.className = "detail-value";
+    val.textContent = d.value;
+    div.append(lbl, val);
+    inner.appendChild(div);
+  }
+
+  td.appendChild(inner);
+  tr.appendChild(td);
+  return tr;
+}
+
 // Build a single table row using DOM APIs (no innerHTML for user data).
 function buildInstanceRow(item) {
   const tr = document.createElement("tr");
   const host = item.proxy_host_omniroute || "";
   const port = String(item.proxy_port);
+  const proxyAddr = host ? `${host}:${port}` : "";
   const health = item.health || "unknown";
   const warpLabel = item.warp ? "ON" : "OFF";
+  const colSpan = 9; // number of main columns
 
   // 1. Instance
   const tdIdx = document.createElement("td");
   tdIdx.textContent = item.instance;
   tr.appendChild(tdIdx);
 
-  // 2. OmniRoute Proxy (copy buttons)
+  // 2. OmniRoute Proxy (host:port with copy button)
   const tdProxy = document.createElement("td");
-  tdProxy.className = "mono proxy-cell";
-  if (host) {
-    // Host row
-    const hostRow = document.createElement("div");
-    hostRow.className = "copy-row";
-    const hostLabel = document.createElement("span");
-    hostLabel.className = "copy-label";
-    hostLabel.textContent = "Host";
-    const hostVal = document.createElement("span");
-    hostVal.className = "copy-val";
-    hostVal.textContent = host;
-    const hostBtn = document.createElement("button");
-    hostBtn.type = "button";
-    hostBtn.className = "copy-btn";
-    hostBtn.textContent = "\u{1F4CB}";
-    hostBtn.title = "Copy host";
-    hostBtn.addEventListener("click", () => copyText(host, hostBtn));
-    hostRow.append(hostLabel, hostVal, hostBtn);
-
-    // Port row
-    const portRow = document.createElement("div");
-    portRow.className = "copy-row";
-    const portLabel = document.createElement("span");
-    portLabel.className = "copy-label";
-    portLabel.textContent = "Port";
-    const portVal = document.createElement("span");
-    portVal.className = "copy-val";
-    portVal.textContent = port;
-    const portBtn = document.createElement("button");
-    portBtn.type = "button";
-    portBtn.className = "copy-btn";
-    portBtn.textContent = "\u{1F4CB}";
-    portBtn.title = "Copy port";
-    portBtn.addEventListener("click", () => copyText(port, portBtn));
-    portRow.append(portLabel, portVal, portBtn);
-
-    tdProxy.append(hostRow, portRow);
+  tdProxy.className = "proxy-cell";
+  if (proxyAddr) {
+    const addrWrap = document.createElement("div");
+    addrWrap.className = "proxy-address";
+    const addrText = document.createElement("span");
+    addrText.className = "proxy-address-text";
+    addrText.textContent = proxyAddr;
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "copy-inline-btn";
+    copyBtn.textContent = "\u{1F4CB}";
+    copyBtn.title = "Copy proxy address";
+    copyBtn.addEventListener("click", () => copyText(proxyAddr, copyBtn));
+    addrWrap.append(addrText, copyBtn);
+    tdProxy.appendChild(addrWrap);
   } else {
     tdProxy.textContent = "-";
   }
   tr.appendChild(tdProxy);
 
-  // 3. Internal Endpoint
-  const tdInt = document.createElement("td");
-  tdInt.className = "mono";
-  tdInt.textContent = `127.0.0.1:${item.internal_port}`;
-  tr.appendChild(tdInt);
-
-  // 4. Current Egress IP
+  // 3. Current Egress IP
   const tdEgress = document.createElement("td");
   tdEgress.className = "mono";
   tdEgress.textContent = item.egress_ip || "-";
   tr.appendChild(tdEgress);
 
-  // 5. Country
+  // 4. Country
   const tdCountry = document.createElement("td");
   tdCountry.textContent = item.country_code ? countryName(item.country_code) : "-";
   tr.appendChild(tdCountry);
 
-  // 6. Colo
+  // 5. Colo
   const tdColo = document.createElement("td");
   tdColo.className = "mono";
   tdColo.textContent = item.colo || "-";
   tr.appendChild(tdColo);
 
-  // 7. Notes (editable)
+  // 6. Notes (editable)
   const tdNote = document.createElement("td");
   tdNote.className = "note-cell";
   const noteDisplay = document.createElement("span");
@@ -293,55 +317,33 @@ function buildInstanceRow(item) {
   tdNote.append(noteDisplay, noteEditBtn, noteInput, noteSaveBtn);
   tr.appendChild(tdNote);
 
-  // 8. WARP
+  // 7. WARP
   const tdWarp = document.createElement("td");
   tdWarp.innerHTML = pill(warpLabel, item.warp ? "on" : "off");
   tr.appendChild(tdWarp);
 
-  // 9. Health
+  // 8. Health
   const tdHealth = document.createElement("td");
   tdHealth.innerHTML = pill(health[0].toUpperCase() + health.slice(1), health);
   tr.appendChild(tdHealth);
 
-  // WATCHDOG RECOVERY DETAILS
-  const wd = item.watchdog || {};
-
-  // 10. Recovery Status
-  const tdRecovery = document.createElement("td");
-  const recoveryStatus = wd.recovery_status || "none";
-  tdRecovery.textContent = recoveryStatus === "none" ? "-" : (recoveryStatus[0].toUpperCase() + recoveryStatus.slice(1));
-  tr.appendChild(tdRecovery);
-
-  // 11. Failures
-  const tdFailures = document.createElement("td");
-  tdFailures.textContent = wd.consecutive_failures !== undefined ? wd.consecutive_failures : "-";
-  tr.appendChild(tdFailures);
-
-  // 12. Reconnects
-  const tdReconnects = document.createElement("td");
-  tdReconnects.textContent = wd.reconnect_count !== undefined ? wd.reconnect_count : "-";
-  tr.appendChild(tdReconnects);
-
-  // 13. Restarts
-  const tdRestarts = document.createElement("td");
-  tdRestarts.textContent = wd.restart_count !== undefined ? wd.restart_count : "-";
-  tr.appendChild(tdRestarts);
-
-  // 14. Last Check
-  const tdLastCheck = document.createElement("td");
-  tdLastCheck.className = "mono date-cell";
-  tdLastCheck.textContent = wd.last_check ? new Date(wd.last_check).toLocaleString() : "-";
-  tr.appendChild(tdLastCheck);
-
-  // 15. Last Recovery
-  const tdLastRec = document.createElement("td");
-  tdLastRec.className = "mono date-cell";
-  const lastRecTime = wd.last_reconnect || wd.last_restart || "";
-  tdLastRec.textContent = lastRecTime ? new Date(lastRecTime).toLocaleString() : "-";
-  tr.appendChild(tdLastRec);
-
-  // 16. Actions
+  // 9. Actions (expand, reconnect, restart)
   const tdActions = document.createElement("td");
+
+  const expandBtn = document.createElement("button");
+  expandBtn.type = "button";
+  expandBtn.className = "expand-btn";
+  expandBtn.textContent = state.expandedRows.has(item.instance) ? "\u25B2" : "\u25BC";
+  expandBtn.title = "Toggle details";
+  expandBtn.addEventListener("click", () => {
+    if (state.expandedRows.has(item.instance)) {
+      state.expandedRows.delete(item.instance);
+    } else {
+      state.expandedRows.add(item.instance);
+    }
+    renderInstances();
+  });
+
   const recBtn = document.createElement("button");
   recBtn.type = "button";
   recBtn.className = "action-btn";
@@ -375,16 +377,163 @@ function buildInstanceRow(item) {
     }
   });
 
-  tdActions.append(recBtn, restBtn);
+  tdActions.append(expandBtn, recBtn, restBtn);
   tr.appendChild(tdActions);
 
-  return tr;
+  // Create details row if expanded
+  const detailsRow = state.expandedRows.has(item.instance)
+    ? buildDetailsRow(item, colSpan)
+    : null;
+
+  return { tr, detailsRow };
+}
+
+// Build a mobile card for small screens
+function buildMobileCard(item) {
+  const host = item.proxy_host_omniroute || "";
+  const port = String(item.proxy_port);
+  const proxyAddr = host ? `${host}:${port}` : "-";
+  const health = item.health || "unknown";
+  const warpLabel = item.warp ? "ON" : "OFF";
+  const wd = item.watchdog || {};
+
+  const card = document.createElement("div");
+  card.className = "mobile-card";
+
+  // Header
+  const head = document.createElement("div");
+  head.className = "mobile-card-head";
+  const title = document.createElement("strong");
+  title.textContent = `Instance ${item.instance}`;
+  const badges = document.createElement("div");
+  badges.innerHTML = pill(warpLabel, item.warp ? "on" : "off") + " " + pill(health[0].toUpperCase() + health.slice(1), health);
+  head.append(title, badges);
+  card.appendChild(head);
+
+  // Rows
+  const rows = [
+    { label: "OmniRoute Proxy", value: proxyAddr, copy: proxyAddr !== "-" ? proxyAddr : null },
+    { label: "Egress IP", value: item.egress_ip || "-", copy: item.egress_ip || null },
+    { label: "Country", value: item.country_code ? countryName(item.country_code) : "-" },
+    { label: "Colo", value: item.colo || "-" },
+    { label: "Notes", value: item.note || "-" },
+  ];
+
+  for (const r of rows) {
+    const row = document.createElement("div");
+    row.className = "mobile-card-row";
+    const lbl = document.createElement("span");
+    lbl.className = "mobile-card-label";
+    lbl.textContent = r.label;
+    const val = document.createElement("span");
+    val.className = "mobile-card-value";
+    val.textContent = r.value;
+    row.append(lbl, val);
+    if (r.copy) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "copy-inline-btn";
+      btn.textContent = "\u{1F4CB}";
+      btn.addEventListener("click", () => copyText(r.copy, btn));
+      row.appendChild(btn);
+    }
+    card.appendChild(row);
+  }
+
+  // Actions
+  const acts = document.createElement("div");
+  acts.className = "mobile-card-actions";
+
+  const recBtn = document.createElement("button");
+  recBtn.type = "button";
+  recBtn.className = "action-btn";
+  recBtn.textContent = "Reconnect";
+  recBtn.addEventListener("click", async () => {
+    recBtn.disabled = true;
+    try {
+      await api(`/api/instances/${item.instance}/reconnect`, { method: "POST", body: "{}" });
+      load();
+    } catch (e) { alert(e.message); }
+    finally { recBtn.disabled = false; }
+  });
+
+  const restBtn = document.createElement("button");
+  restBtn.type = "button";
+  restBtn.className = "action-btn rest-btn";
+  restBtn.textContent = "Restart WARP";
+  restBtn.addEventListener("click", async () => {
+    if (!confirm(`Restart WARP instance ${item.instance}?`)) return;
+    restBtn.disabled = true;
+    try {
+      await api(`/api/instances/${item.instance}/restart`, { method: "POST", body: "{}" });
+      load();
+    } catch (e) { alert(e.message); }
+    finally { restBtn.disabled = false; }
+  });
+
+  const detailBtn = document.createElement("button");
+  detailBtn.type = "button";
+  detailBtn.className = "expand-btn";
+  detailBtn.textContent = state.expandedRows.has(item.instance) ? "\u25B2 Details" : "\u25BC Details";
+  detailBtn.addEventListener("click", () => {
+    if (state.expandedRows.has(item.instance)) {
+      state.expandedRows.delete(item.instance);
+    } else {
+      state.expandedRows.add(item.instance);
+    }
+    renderInstances();
+  });
+
+  acts.append(recBtn, restBtn, detailBtn);
+  card.appendChild(acts);
+
+  // Expandable details
+  if (state.expandedRows.has(item.instance)) {
+    const det = document.createElement("div");
+    det.className = "mobile-card-details";
+    const detailItems = [
+      { label: "Internal WARP Endpoint", value: `127.0.0.1:${item.internal_port}` },
+      { label: "Recovery", value: (wd.recovery_status || "none") === "none" ? "-" : wd.recovery_status },
+      { label: "Failures", value: wd.consecutive_failures !== undefined ? String(wd.consecutive_failures) : "-" },
+      { label: "Reconnects", value: wd.reconnect_count !== undefined ? String(wd.reconnect_count) : "-" },
+      { label: "Restarts", value: wd.restart_count !== undefined ? String(wd.restart_count) : "-" },
+      { label: "Last Check", value: wd.last_check ? new Date(wd.last_check).toLocaleString() : "-" },
+      { label: "Last Recovery", value: (wd.last_reconnect || wd.last_restart) ? new Date(wd.last_reconnect || wd.last_restart).toLocaleString() : "-" },
+    ];
+    for (const d of detailItems) {
+      const row = document.createElement("div");
+      row.className = "mobile-card-row";
+      const lbl = document.createElement("span");
+      lbl.className = "mobile-card-label";
+      lbl.textContent = d.label;
+      const val = document.createElement("span");
+      val.className = "mobile-card-value";
+      val.textContent = d.value;
+      row.append(lbl, val);
+      det.appendChild(row);
+    }
+    card.appendChild(det);
+  }
+
+  return card;
 }
 
 function renderInstances() {
+  // Desktop table
   els.instancesBody.innerHTML = "";
   for (const item of state.instances) {
-    els.instancesBody.appendChild(buildInstanceRow(item));
+    const { tr, detailsRow } = buildInstanceRow(item);
+    els.instancesBody.appendChild(tr);
+    if (detailsRow) {
+      els.instancesBody.appendChild(detailsRow);
+    }
+  }
+
+  // Mobile cards
+  els.mobileCards.innerHTML = "";
+  els.mobileCards.hidden = false;
+  for (const item of state.instances) {
+    els.mobileCards.appendChild(buildMobileCard(item));
   }
 }
 
@@ -456,6 +605,74 @@ async function load() {
   renderInstances();
   populateSettings();
 }
+
+// -- Export OmniRoute --
+
+async function openExport() {
+  els.exportError.hidden = true;
+  els.exportAuthWarning.hidden = true;
+  els.exportText.value = "";
+  els.exportMeta.innerHTML = "";
+  els.exportMessage.textContent = "";
+
+  try {
+    const data = await api("/api/export/omniroute");
+    if (!data.ok) {
+      els.exportError.textContent = data.error || "Export failed.";
+      els.exportError.hidden = false;
+      els.exportText.value = "";
+      els.exportDialog.showModal();
+      return;
+    }
+
+    if (data.auth_warning) {
+      els.exportAuthWarning.textContent = data.auth_warning;
+      els.exportAuthWarning.hidden = false;
+    }
+
+    els.exportText.value = data.text || "";
+    els.exportMeta.innerHTML = `
+      <span>Proxies: <strong>${data.count}</strong></span>
+      <span>Host: <strong>${data.host}</strong></span>
+      <span>Ports: <strong>${data.port_range}</strong></span>
+    `;
+    els.exportDialog.showModal();
+  } catch (e) {
+    els.exportError.textContent = e.message;
+    els.exportError.hidden = false;
+    els.exportDialog.showModal();
+  }
+}
+
+els.exportBtn.addEventListener("click", openExport);
+els.closeExport.addEventListener("click", () => els.exportDialog.close());
+
+els.exportCopy.addEventListener("click", () => {
+  const text = els.exportText.value;
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(() => {
+    els.exportMessage.textContent = "Copied to clipboard";
+    setTimeout(() => { els.exportMessage.textContent = ""; }, 2000);
+  }).catch(() => {
+    els.exportMessage.textContent = "Copy failed";
+  });
+});
+
+els.exportDownload.addEventListener("click", () => {
+  const text = els.exportText.value;
+  if (!text) return;
+  const blob = new Blob([text], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "omniroute-proxies.txt";
+  a.click();
+  URL.revokeObjectURL(url);
+  els.exportMessage.textContent = "Downloaded";
+  setTimeout(() => { els.exportMessage.textContent = ""; }, 2000);
+});
+
+// -- Event listeners --
 
 els.refreshBtn.addEventListener("click", async () => {
   els.refreshBtn.disabled = true;

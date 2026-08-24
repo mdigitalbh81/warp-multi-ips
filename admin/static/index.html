@@ -15,6 +15,7 @@
       </div>
       <div class="actions">
         <button id="refreshBtn" type="button">Refresh Egress IPs</button>
+        <button id="exportBtn" type="button" class="secondary">Export OmniRoute</button>
         <button id="settingsBtn" type="button" class="secondary">Settings</button>
       </div>
     </header>
@@ -39,25 +40,18 @@
     </section>
 
     <section class="panel">
-      <div class="table-wrap">
+      <div class="table-wrap" id="tableWrap">
         <table>
           <thead>
             <tr>
               <th>Instance</th>
               <th><span class="th-tip" title="IP/hostname that OmniRoute uses to access the SOCKS5 ports">OmniRoute Proxy</span></th>
-              <th>Internal Endpoint</th>
               <th><span class="th-tip" title="Public address currently used by Cloudflare WARP for outbound traffic">Current Egress IP</span></th>
               <th>Country</th>
-              <th>Colo</th>
+              <th><span class="th-tip" title="Cloudflare colocation/datacenter currently handling this WARP egress. Example: GRU = S&#xe3;o Paulo/Guarulhos.">Colo</span></th>
               <th>Notes</th>
               <th>WARP</th>
               <th>Health</th>
-              <th>Recovery</th>
-              <th><span class="th-tip" title="Consecutive health-check failures">Failures</span></th>
-              <th>Reconnects</th>
-              <th>Restarts</th>
-              <th><span class="th-tip" title="Timestamp of last health check">Last Check</span></th>
-              <th><span class="th-tip" title="Timestamp of last recovery action">Last Recovery</span></th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -65,6 +59,9 @@
         </table>
       </div>
     </section>
+
+    <!-- Mobile card view -->
+    <section class="mobile-cards" id="mobileCards" hidden></section>
 
     <dialog id="settingsDialog">
       <form id="settingsForm" method="dialog">
@@ -173,6 +170,24 @@
           <button type="submit">Apply</button>
         </footer>
       </form>
+    </dialog>
+
+    <dialog id="exportDialog">
+      <div class="export-content">
+        <header class="dialog-head">
+          <h2>Export OmniRoute</h2>
+          <button id="closeExport" type="button" class="icon">x</button>
+        </header>
+        <div id="exportError" class="export-error" hidden></div>
+        <div id="exportAuthWarning" class="export-warning" hidden></div>
+        <div id="exportMeta" class="export-meta"></div>
+        <textarea id="exportText" readonly rows="12"></textarea>
+        <footer class="dialog-actions">
+          <span id="exportMessage"></span>
+          <button id="exportCopy" type="button">Copy to Clipboard</button>
+          <button id="exportDownload" type="button" class="secondary">Download .txt</button>
+        </footer>
+      </div>
     </dialog>
   </main>
   <script src="/app.js"></script>

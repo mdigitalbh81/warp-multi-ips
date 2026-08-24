@@ -1047,6 +1047,77 @@ def parse_basic_auth(header):
         return None, None
 
 
+# Country name (from Cloudflare trace 'loc' field, ISO alpha-2) to code mapping
+# is already alpha-2 in the API data, so we just use it directly.
+
+def generate_omniroute_export():
+    """Generate OmniRoute Bulk Import Proxies text."""
+    cfg = get_config(True)
+    proxy_host = cfg.get("proxy_host_omniroute") or ""
+    if not proxy_host:
+        return {
+            "ok": False,
+            "error": "Configure PROXY_HOST_OMNIROUTE before exporting.",
+            "lines": [],
+            "count": 0,
+        }
+
+    instances = get_instances()
+    base_port = cfg.get("proxy_base_port", 2080)
+    proxy_mode = cfg.get("proxy_mode", "dedicated")
+    proxy_auth = cfg.get("proxy_auth_enabled", False)
+    proxy_user = cfg.get("proxy_user", "") if proxy_auth else ""
+    num_instances = cfg.get("instances", 1)
+    pad = len(str(num_instances))
+    if pad < 2:
+        pad = 2
+
+    auth_warning = None
+    if proxy_auth and proxy_user:
+        auth_warning = (
+            "Proxy authentication is enabled. The OmniRoute Bulk Import text format "
+            "does not include a password field. Proxies exported with username only "
+            "will require manual password configuration in OmniRoute."
+        )
+
+    lines = []
+    for item in instances:
+        idx = item["instance"]
+        port = base_port + (idx - 1) if proxy_mode == "dedicated" else 1080
+        if port < base_port or port >= base_port + num_instances:
+            continue
+        health = item.get("health", "unknown")
+        if health not in ("healthy", "degraded"):
+            status = "inactive"
+        else:
+            status = "active"
+
+        name = f"WARP-{idx:0{pad}d}"
+        country_code = item.get("country_code") or ""
+        colo = item.get("colo") or ""
+        if country_code and colo:
+            region = f"{country_code}-{colo}"
+        else:
+            region = ""
+
+        username = proxy_user if proxy_auth and not auth_warning else (proxy_user if proxy_auth else "")
+        line = f"{name} | socks5 | {proxy_host} | {port} | {username} | {region} | {status}"
+        lines.append(line)
+
+    text = "\n".join(lines)
+    return {
+        "ok": True,
+        "text": text,
+        "lines": lines,
+        "count": len(lines),
+        "host": proxy_host,
+        "base_port": base_port,
+        "port_range": f"{base_port}-{base_port + num_instances - 1}",
+        "proxy_auth_enabled": proxy_auth,
+        "auth_warning": auth_warning,
+    }
+
+
 class Handler(SimpleHTTPRequestHandler):
     server_version = "WarpAdmin/1.0"
 
@@ -1141,6 +1212,8 @@ class Handler(SimpleHTTPRequestHandler):
             })
         elif parsed.path == "/api/watchdog":
             self.send_json(read_watchdog_state())
+        elif parsed.path == "/api/export/omniroute":
+            self.send_json(generate_omniroute_export())
         else:
             if not self.require_auth():
                 return
