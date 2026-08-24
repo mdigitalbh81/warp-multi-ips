@@ -496,15 +496,29 @@ def read_env_file():
     return env
 
 
+def nonempty(value):
+    return value is not None and str(value).strip() != ""
+
+
+def resolve_proxy_host_omniroute(env, stored=None):
+    stored = stored or {}
+    candidates = (
+        os.environ.get("PROXY_HOST_OMNIROUTE", ""),
+        env.get("PROXY_HOST_OMNIROUTE", ""),
+        stored.get("proxy_host_omniroute", ""),
+        os.environ.get("PROXY_HOST", ""),
+        env.get("PROXY_HOST", ""),
+    )
+    for value in candidates:
+        if nonempty(value):
+            return str(value).strip()
+    return ""
+
+
 def base_config():
     env = read_env_file()
     return {
-        "proxy_host_omniroute": (
-            env.get("PROXY_HOST_OMNIROUTE")
-            or os.environ.get("PROXY_HOST_OMNIROUTE", "")
-            or env.get("PROXY_HOST")
-            or os.environ.get("PROXY_HOST", "")
-        ),
+        "proxy_host_omniroute": resolve_proxy_host_omniroute(env),
         "instances": int(env.get("WARP_INSTANCES") or os.environ.get("WARP_INSTANCES", "1")),
         "proxy_mode": env.get("PROXY_MODE") or os.environ.get("PROXY_MODE", "round-robin"),
         "proxy_base_port": int(env.get("PROXY_BASE_PORT") or os.environ.get("PROXY_BASE_PORT", "2080")),
@@ -520,16 +534,8 @@ def base_config():
 def get_config(include_secret=False):
     cfg = base_config()
     stored = read_json(CONFIG_FILE, {})
-    # Store env host first (base_config handles the env file & os.environ)
-    env_host = cfg.get("proxy_host_omniroute") or ""
     cfg.update(stored)
-
-    # Precedence rule: if stored host is absent, null or empty string, fallback to env host
-    stored_host = stored.get("proxy_host_omniroute")
-    if stored_host is None or str(stored_host).strip() == "":
-        cfg["proxy_host_omniroute"] = env_host
-    else:
-        cfg["proxy_host_omniroute"] = stored_host
+    cfg["proxy_host_omniroute"] = resolve_proxy_host_omniroute(read_env_file(), stored)
 
     cfg["instances"] = int(cfg.get("instances", 1))
     cfg["proxy_base_port"] = int(cfg.get("proxy_base_port", 2080))
@@ -1087,9 +1093,9 @@ def generate_omniroute_export():
     auth_warning = None
     if proxy_auth and proxy_user:
         auth_warning = (
-            "Proxy authentication is enabled. The OmniRoute Bulk Import text format "
-            "does not include a password field. Proxies exported with username only "
-            "will require manual password configuration in OmniRoute."
+            "Proxy authentication is enabled. The export includes the username but "
+            "intentionally leaves the password empty; configure the password "
+            "separately in OmniRoute."
         )
 
     lines = []
@@ -1099,10 +1105,8 @@ def generate_omniroute_export():
         if port < base_port or port >= base_port + num_instances:
             continue
         health = item.get("health", "unknown")
-        if health not in ("healthy", "degraded"):
-            status = "inactive"
-        else:
-            status = "active"
+        usable = health == "healthy" or item.get("proxy_healthy") is True or item.get("listener_healthy") is True
+        status = "active" if usable else "inactive"
 
         name = f"WARP-{idx:0{pad}d}"
         country_code = item.get("country_code") or ""
@@ -1112,8 +1116,12 @@ def generate_omniroute_export():
         else:
             region = ""
 
-        username = proxy_user if proxy_auth and not auth_warning else (proxy_user if proxy_auth else "")
-        line = f"{name} | socks5 | {proxy_host} | {port} | {username} | {region} | {status}"
+        username = proxy_user if proxy_auth else ""
+        note = item.get("note") or ""
+        if "|" in note or "\n" in note or "\r" in note:
+            note = ""
+        fields = [name, proxy_host, str(port), username, "", "socks5", region, status, note.strip()]
+        line = " | ".join(fields)
         lines.append(line)
 
     text = "\n".join(lines)

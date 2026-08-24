@@ -19,13 +19,20 @@ write_file() {
 
 load_admin_config() {
     if [ "${ADMIN_ENABLED:-false}" = "true" ] && [ -f "$ADMIN_CONFIG_FILE" ]; then
+        local env_proxy_host_omniroute="${ENV_PROXY_HOST_OMNIROUTE:-${PROXY_HOST_OMNIROUTE:-}}"
+        local persisted_proxy_host_omniroute
         WARP_INSTANCES=$(jq -r '.instances // env.WARP_INSTANCES // "1"' "$ADMIN_CONFIG_FILE")
         PROXY_MODE=$(jq -r '.proxy_mode // env.PROXY_MODE // "round-robin"' "$ADMIN_CONFIG_FILE")
         PROXY_BASE_PORT=$(jq -r '.proxy_base_port // env.PROXY_BASE_PORT // "2080"' "$ADMIN_CONFIG_FILE")
-        PROXY_HOST_OMNIROUTE=$(jq -r '.proxy_host_omniroute // .proxy_host // ""' "$ADMIN_CONFIG_FILE")
-        # Fallback: env PROXY_HOST_OMNIROUTE > config > env PROXY_HOST
-        if [ -z "$PROXY_HOST_OMNIROUTE" ]; then
-            PROXY_HOST_OMNIROUTE="${PROXY_HOST_OMNIROUTE:-${PROXY_HOST:-}}"
+        persisted_proxy_host_omniroute=$(jq -r '.proxy_host_omniroute // ""' "$ADMIN_CONFIG_FILE")
+        if [ -n "$env_proxy_host_omniroute" ]; then
+            PROXY_HOST_OMNIROUTE="$env_proxy_host_omniroute"
+        elif [ -n "$persisted_proxy_host_omniroute" ]; then
+            PROXY_HOST_OMNIROUTE="$persisted_proxy_host_omniroute"
+        elif [ -n "${PROXY_HOST:-}" ]; then
+            PROXY_HOST_OMNIROUTE="$PROXY_HOST"
+        else
+            PROXY_HOST_OMNIROUTE=""
         fi
         PROXY_MAX_RPS=$(jq -r '.proxy_max_rps // env.PROXY_MAX_RPS // "50"' "$ADMIN_CONFIG_FILE")
         WARP_CONNECT_TIMEOUT=$(jq -r '.warp_connect_timeout // env.WARP_CONNECT_TIMEOUT // "30"' "$ADMIN_CONFIG_FILE")
@@ -137,7 +144,7 @@ write_admin_env_file() {
         printf 'AUTO_REFRESH_INTERVAL=%s\n' "${AUTO_REFRESH_INTERVAL:-60}"
         printf 'PROXY_AUTH_ENABLED=%s\n' "${PROXY_AUTH_ENABLED:-false}"
         printf 'PROXY_USER=%s\n' "${PROXY_USER:-}"
-        printf 'PROXY_HOST_OMNIROUTE=%s\n' "${PROXY_HOST_OMNIROUTE:-${PROXY_HOST:-}}"
+        printf 'PROXY_HOST_OMNIROUTE=%s\n' "${PROXY_HOST_OMNIROUTE:-}"
     } > "$WARP_ENV_FILE"
 }
 

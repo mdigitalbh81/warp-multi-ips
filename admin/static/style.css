@@ -233,18 +233,31 @@ tr:last-child td {
 /* -- OmniRoute Proxy cell -- */
 .proxy-cell {
   white-space: normal;
-  min-width: 170px;
+  min-width: 260px;
 }
 
-.proxy-address {
-  display: flex;
-  align-items: center;
+.proxy-parts {
+  display: grid;
   gap: 6px;
 }
 
-.proxy-address-text {
+.proxy-part {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.proxy-label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.proxy-value {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .copy-inline-btn {
@@ -259,6 +272,11 @@ tr:last-child td {
   cursor: pointer;
   line-height: 1;
   flex-shrink: 0;
+}
+
+.proxy-copy-btn {
+  min-width: 74px;
+  padding: 0 8px;
 }
 
 .copy-inline-btn:hover {
@@ -640,6 +658,8 @@ legend {
   text-align: right;
   word-break: break-all;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  min-width: 0;
+  flex: 1;
 }
 
 .mobile-card-actions {

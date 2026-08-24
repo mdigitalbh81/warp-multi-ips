@@ -143,6 +143,40 @@ function pill(label, value) {
   return `<span class="pill ${healthClass(value)}">${label}</span>`;
 }
 
+function buildProxyPart(label, value, title) {
+  const row = document.createElement("div");
+  row.className = "proxy-part";
+  const labelEl = document.createElement("span");
+  labelEl.className = "proxy-label";
+  labelEl.textContent = label;
+  const valueEl = document.createElement("span");
+  valueEl.className = "proxy-value";
+  valueEl.textContent = value;
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "copy-inline-btn proxy-copy-btn";
+  copyBtn.textContent = title === "Copy host" ? "Copy Host" : "Copy Port";
+  copyBtn.title = title;
+  copyBtn.addEventListener("click", () => copyText(value, copyBtn));
+  row.append(labelEl, valueEl, copyBtn);
+  return row;
+}
+
+function buildProxyParts(host, port) {
+  if (!host) {
+    const empty = document.createElement("span");
+    empty.textContent = "-";
+    return empty;
+  }
+  const wrap = document.createElement("div");
+  wrap.className = "proxy-parts";
+  wrap.append(
+    buildProxyPart("Host", host, "Copy host"),
+    buildProxyPart("Port", port, "Copy port"),
+  );
+  return wrap;
+}
+
 function renderSummary() {
   const cfg = state.config;
   const status = state.status;
@@ -198,8 +232,7 @@ function buildDetailsRow(item, colSpan) {
 function buildInstanceRow(item) {
   const tr = document.createElement("tr");
   const host = item.proxy_host_omniroute || "";
-  const port = String(item.proxy_port);
-  const proxyAddr = host ? `${host}:${port}` : "";
+  const port = item.proxy_port === undefined || item.proxy_port === null ? "" : String(item.proxy_port);
   const health = item.health || "unknown";
   const warpLabel = item.warp ? "ON" : "OFF";
   const colSpan = 9; // number of main columns
@@ -209,26 +242,10 @@ function buildInstanceRow(item) {
   tdIdx.textContent = item.instance;
   tr.appendChild(tdIdx);
 
-  // 2. OmniRoute Proxy (host:port with copy button)
+  // 2. OmniRoute Proxy
   const tdProxy = document.createElement("td");
   tdProxy.className = "proxy-cell";
-  if (proxyAddr) {
-    const addrWrap = document.createElement("div");
-    addrWrap.className = "proxy-address";
-    const addrText = document.createElement("span");
-    addrText.className = "proxy-address-text";
-    addrText.textContent = proxyAddr;
-    const copyBtn = document.createElement("button");
-    copyBtn.type = "button";
-    copyBtn.className = "copy-inline-btn";
-    copyBtn.textContent = "\u{1F4CB}";
-    copyBtn.title = "Copy proxy address";
-    copyBtn.addEventListener("click", () => copyText(proxyAddr, copyBtn));
-    addrWrap.append(addrText, copyBtn);
-    tdProxy.appendChild(addrWrap);
-  } else {
-    tdProxy.textContent = "-";
-  }
+  tdProxy.appendChild(buildProxyParts(host, port));
   tr.appendChild(tdProxy);
 
   // 3. Current Egress IP
@@ -391,8 +408,7 @@ function buildInstanceRow(item) {
 // Build a mobile card for small screens
 function buildMobileCard(item) {
   const host = item.proxy_host_omniroute || "";
-  const port = String(item.proxy_port);
-  const proxyAddr = host ? `${host}:${port}` : "-";
+  const port = item.proxy_port === undefined || item.proxy_port === null ? "" : String(item.proxy_port);
   const health = item.health || "unknown";
   const warpLabel = item.warp ? "ON" : "OFF";
   const wd = item.watchdog || {};
@@ -412,7 +428,8 @@ function buildMobileCard(item) {
 
   // Rows
   const rows = [
-    { label: "OmniRoute Proxy", value: proxyAddr, copy: proxyAddr !== "-" ? proxyAddr : null },
+    { label: "OmniRoute Host", value: host || "-", copy: host || null, copyTitle: "Copy host" },
+    { label: "OmniRoute Port", value: port || "-", copy: port || null, copyTitle: "Copy port" },
     { label: "Egress IP", value: item.egress_ip || "-", copy: item.egress_ip || null },
     { label: "Country", value: item.country_code ? countryName(item.country_code) : "-" },
     { label: "Colo", value: item.colo || "-" },
@@ -433,7 +450,8 @@ function buildMobileCard(item) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "copy-inline-btn";
-      btn.textContent = "\u{1F4CB}";
+      btn.textContent = r.copyTitle === "Copy host" ? "Copy Host" : (r.copyTitle === "Copy port" ? "Copy Port" : "Copy");
+      btn.title = r.copyTitle || "Copy";
       btn.addEventListener("click", () => copyText(r.copy, btn));
       row.appendChild(btn);
     }
