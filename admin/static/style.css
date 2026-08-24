@@ -233,7 +233,7 @@ tr:last-child td {
 /* -- OmniRoute Proxy cell -- */
 .proxy-cell {
   white-space: normal;
-  min-width: 260px;
+  min-width: 210px;
 }
 
 .proxy-parts {
@@ -243,9 +243,9 @@ tr:last-child td {
 
 .proxy-part {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) auto;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .proxy-label {
@@ -275,8 +275,8 @@ tr:last-child td {
 }
 
 .proxy-copy-btn {
-  min-width: 74px;
-  padding: 0 8px;
+  min-width: 24px;
+  padding: 0 5px;
 }
 
 .copy-inline-btn:hover {

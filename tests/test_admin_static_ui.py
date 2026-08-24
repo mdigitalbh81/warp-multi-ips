@@ -14,15 +14,19 @@ class AdminStaticUiTests(unittest.TestCase):
     def test_desktop_has_separate_copy_host_and_copy_port_controls(self):
         self.assertIn("buildProxyPart(\"Host\", host, \"Copy host\")", self.app_js)
         self.assertIn("buildProxyPart(\"Port\", port, \"Copy port\")", self.app_js)
-        self.assertIn("Copy Host", self.app_js)
-        self.assertIn("Copy Port", self.app_js)
+        self.assertIn("copyText(value, copyBtn)", self.app_js)
+        self.assertIn("copyBtn.title = title", self.app_js)
+        self.assertIn("copyBtn.setAttribute(\"aria-label\", title)", self.app_js)
         self.assertNotIn("Copy proxy address", self.app_js)
+        self.assertNotIn("proxyAddr", self.app_js)
 
     def test_mobile_card_has_separate_host_and_port_rows(self):
         self.assertIn("OmniRoute Host", self.app_js)
         self.assertIn("OmniRoute Port", self.app_js)
         self.assertRegex(self.app_js, re.compile(r"copy:\s*host\s*\|\|\s*null"))
         self.assertRegex(self.app_js, re.compile(r"copy:\s*port\s*\|\|\s*null"))
+        self.assertIn("copyText(r.copy, btn)", self.app_js)
+        self.assertIn("btn.setAttribute(\"aria-label\", r.copyTitle || \"Copy\")", self.app_js)
 
     def test_mobile_and_proxy_styles_avoid_horizontal_overflow(self):
         self.assertIn("overflow-wrap: anywhere;", self.style_css)

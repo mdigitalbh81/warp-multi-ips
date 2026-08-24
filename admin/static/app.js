@@ -155,8 +155,9 @@ function buildProxyPart(label, value, title) {
   const copyBtn = document.createElement("button");
   copyBtn.type = "button";
   copyBtn.className = "copy-inline-btn proxy-copy-btn";
-  copyBtn.textContent = title === "Copy host" ? "Copy Host" : "Copy Port";
+  copyBtn.textContent = "\u{1F4CB}";
   copyBtn.title = title;
+  copyBtn.setAttribute("aria-label", title);
   copyBtn.addEventListener("click", () => copyText(value, copyBtn));
   row.append(labelEl, valueEl, copyBtn);
   return row;
@@ -450,8 +451,9 @@ function buildMobileCard(item) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "copy-inline-btn";
-      btn.textContent = r.copyTitle === "Copy host" ? "Copy Host" : (r.copyTitle === "Copy port" ? "Copy Port" : "Copy");
+      btn.textContent = "\u{1F4CB}";
       btn.title = r.copyTitle || "Copy";
+      btn.setAttribute("aria-label", r.copyTitle || "Copy");
       btn.addEventListener("click", () => copyText(r.copy, btn));
       row.appendChild(btn);
     }
