@@ -520,14 +520,23 @@ def base_config():
 def get_config(include_secret=False):
     cfg = base_config()
     stored = read_json(CONFIG_FILE, {})
+    # Store env host first (base_config handles the env file & os.environ)
+    env_host = cfg.get("proxy_host_omniroute") or ""
     cfg.update(stored)
+
+    # Precedence rule: if stored host is absent, null or empty string, fallback to env host
+    stored_host = stored.get("proxy_host_omniroute")
+    if stored_host is None or str(stored_host).strip() == "":
+        cfg["proxy_host_omniroute"] = env_host
+    else:
+        cfg["proxy_host_omniroute"] = stored_host
+
     cfg["instances"] = int(cfg.get("instances", 1))
     cfg["proxy_base_port"] = int(cfg.get("proxy_base_port", 2080))
     cfg["proxy_max_rps"] = int(cfg.get("proxy_max_rps", 50))
     cfg["warp_connect_timeout"] = int(cfg.get("warp_connect_timeout", 30))
     cfg["auto_refresh_interval"] = int(cfg.get("auto_refresh_interval", 60))
     cfg["proxy_auth_enabled"] = bool(cfg.get("proxy_auth_enabled", False))
-    cfg["proxy_host_omniroute"] = cfg.get("proxy_host_omniroute") or cfg.get("proxy_host") or ""
     cfg["proxy_user"] = cfg.get("proxy_user") or ""
     if include_secret:
         cfg["proxy_password"] = cfg.get("proxy_password") or ""
