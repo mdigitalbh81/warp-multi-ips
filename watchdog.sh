@@ -21,6 +21,9 @@ WATCHDOG_STATE_FILE="/tmp/watchdog-state.json"
 PROXY_MODE=${PROXY_MODE:-round-robin}
 PROXY_BASE_PORT=${PROXY_BASE_PORT:-2080}
 
+WARP_DATA_DIR=${WARP_DATA_DIR:-/var/lib/cloudflare-warp}
+ADMIN_CONFIG_FILE=${ADMIN_CONFIG_FILE:-${WARP_DATA_DIR}/admin-config.json}
+
 # Per-instance runtime state (bash arrays)
 declare -A WD_STATUS            # healthy|degraded|recovering|offline
 declare -A WD_CONSECUTIVE_FAILS
@@ -46,7 +49,35 @@ now_epoch() {
 }
 
 log() {
-    echo "[watchdog] $*"
+  echo "[watchdog] $*"
+}
+
+# Re-read instance count from admin config; init state for any new instances
+reload_instance_count() {
+  local new_count="$WARP_INSTANCES"
+  if [ -f "$ADMIN_CONFIG_FILE" ] && command -v jq &>/dev/null; then
+    local val
+    val=$(jq -r '.instances // empty' "$ADMIN_CONFIG_FILE" 2>/dev/null) || true
+    if [[ "$val" =~ ^[0-9]+$ ]] && [ "$val" -ge 1 ]; then
+      new_count="$val"
+    fi
+  fi
+  if [ "$new_count" != "$WARP_INSTANCES" ]; then
+    if [ "$new_count" -gt "$WARP_INSTANCES" ]; then
+      local i
+      for i in $(seq "$WARP_INSTANCES" $((new_count - 1))); do
+        if [ -z "${WD_STATUS[$i]+x}" ]; then
+          WD_STATUS[$i]="healthy"; WD_CONSECUTIVE_FAILS[$i]=0; WD_LAST_CHECK[$i]=""
+          WD_LAST_SUCCESS[$i]=""; WD_LAST_FAILURE[$i]=""; WD_LAST_RECONNECT[$i]=""
+          WD_LAST_RESTART[$i]=""; WD_RECONNECT_COUNT[$i]=0; WD_RESTART_COUNT[$i]=0
+          WD_RECOVERY_STATUS[$i]="none"; WD_LAST_ERROR[$i]=""
+          WD_PREV_EGRESS[$i]=""; WD_CURRENT_EGRESS[$i]=""; WD_LAST_EGRESS_CHANGE[$i]=""
+        fi
+      done
+    fi
+    log "instance count changed: ${WARP_INSTANCES} -> ${new_count}"
+    WARP_INSTANCES="$new_count"
+  fi
 }
 
 # Initialize state for all instances
@@ -414,8 +445,9 @@ main() {
     # Initial grace period - let instances stabilize
     sleep "$WARP_WATCHDOG_INTERVAL"
 
-    while true; do
-        for i in $(seq 0 $((WARP_INSTANCES - 1))); do
+  while true; do
+    reload_instance_count
+    for i in $(seq 0 $((WARP_INSTANCES - 1))); do
             process_instance "$i"
         done
         sleep "$WARP_WATCHDOG_INTERVAL"
