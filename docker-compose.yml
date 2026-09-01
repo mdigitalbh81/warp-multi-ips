@@ -9,7 +9,7 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     ports:
-      - "${PROXY_PORT_RANGE:-2080-2180}:${PROXY_PORT_RANGE:-2080-2100}"
+      - "${PROXY_PORT_RANGE:-2080-2180}:${PROXY_PORT_RANGE:-2080-2180}"
     environment:
       WARP_INSTANCES: "${WARP_INSTANCES:-20}"
       PROXY_MODE: "dedicated"
