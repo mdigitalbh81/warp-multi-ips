@@ -3,26 +3,38 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+
     restart: unless-stopped
+
     cap_add:
       - NET_ADMIN
+
     devices:
       - /dev/net/tun:/dev/net/tun
+
     ports:
-      - "${PROXY_PORT_RANGE:-2080-2180}:${PROXY_PORT_RANGE:-2080-2180}"
+      - "2080-2279:2080-2279"
+
     environment:
-      WARP_INSTANCES: "${WARP_INSTANCES:-20}"
+      WARP_INSTANCES: "${WARP_INSTANCES:-50}"
       PROXY_MODE: "dedicated"
       PROXY_BASE_PORT: "2080"
+
+      PROXY_MAX_CONN: "200"
       PROXY_MAX_RPS: "50"
+
       WARP_CONNECT_TIMEOUT: "90"
+
       ADMIN_ENABLED: "true"
       ADMIN_PORT: "9090"
       ADMIN_USER: "${ADMIN_USER}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
+
       PROXY_HOST_OMNIROUTE: "${PROXY_HOST_OMNIROUTE}"
+
     volumes:
       - warp-data:/var/lib/cloudflare-warp
+
     networks:
       default:
       easypanel:
