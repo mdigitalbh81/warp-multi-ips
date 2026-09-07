@@ -515,6 +515,96 @@ def resolve_proxy_host_omniroute(env, stored=None):
     return ""
 
 
+def is_explicit_env(env_key):
+    flag = f"ENV_{env_key}_SET"
+    if flag in os.environ:
+        return os.environ[flag] == "true"
+    val = os.environ.get(env_key)
+    if nonempty(val):
+        return True
+    if env_key == "PROXY_HOST_OMNIROUTE" and nonempty(os.environ.get("PROXY_HOST")):
+        return True
+    return False
+
+
+def resolve_config_field(env, stored, env_key, stored_key, default, conv=str, min_val=None):
+    stored = stored or {}
+    # 1. Container environment variable
+    if is_explicit_env(env_key):
+        val = os.environ.get(env_key)
+        if nonempty(val):
+            try:
+                cval = conv(val)
+                if min_val is None or cval >= min_val:
+                    return cval
+            except (ValueError, TypeError):
+                pass
+
+    # 2. Persisted admin config
+    if stored_key in stored and stored[stored_key] is not None and str(stored[stored_key]).strip() != "":
+        try:
+            cval = conv(stored[stored_key])
+            if min_val is None or cval >= min_val:
+                return cval
+        except (ValueError, TypeError):
+            pass
+
+    # 3. WARP_ENV_FILE fallback
+    val = env.get(env_key)
+    if nonempty(val):
+        try:
+            cval = conv(val)
+            if min_val is None or cval >= min_val:
+                return cval
+        except (ValueError, TypeError):
+            pass
+
+    # 4. OS environment fallback
+    val = os.environ.get(env_key)
+    if nonempty(val):
+        try:
+            cval = conv(val)
+            if min_val is None or cval >= min_val:
+                return cval
+        except (ValueError, TypeError):
+            pass
+    # 5. Default
+    return conv(default)
+
+
+def sync_persisted_config():
+    if not CONFIG_FILE.exists():
+        return
+    stored = read_json(CONFIG_FILE, {})
+    if not stored:
+        return
+    changed = False
+    for key, env_key, conv in [
+        ("instances", "WARP_INSTANCES", int),
+        ("proxy_mode", "PROXY_MODE", str),
+        ("proxy_base_port", "PROXY_BASE_PORT", int),
+        ("proxy_max_rps", "PROXY_MAX_RPS", int),
+        ("warp_connect_timeout", "WARP_CONNECT_TIMEOUT", int),
+        ("auto_refresh_interval", "AUTO_REFRESH_INTERVAL", int),
+        ("proxy_host_omniroute", "PROXY_HOST_OMNIROUTE", str),
+    ]:
+        if not is_explicit_env(env_key):
+            continue
+        val = os.environ.get(env_key)
+        if key == "proxy_host_omniroute" and not nonempty(val):
+            val = os.environ.get("PROXY_HOST")
+        if nonempty(val):
+            try:
+                cval = conv(val)
+                if stored.get(key) != cval:
+                    stored[key] = cval
+                    changed = True
+            except (ValueError, TypeError):
+                pass
+    if changed:
+        write_json_atomic(CONFIG_FILE, stored)
+
+
 def base_config():
     env = read_env_file()
     return {
@@ -532,23 +622,24 @@ def base_config():
 
 
 def get_config(include_secret=False):
-    cfg = base_config()
+    env = read_env_file()
     stored = read_json(CONFIG_FILE, {})
-    cfg.update(stored)
-    cfg["proxy_host_omniroute"] = resolve_proxy_host_omniroute(read_env_file(), stored)
-
-    cfg["instances"] = int(cfg.get("instances", 1))
-    cfg["proxy_base_port"] = int(cfg.get("proxy_base_port", 2080))
-    cfg["proxy_max_rps"] = int(cfg.get("proxy_max_rps", 50))
-    cfg["warp_connect_timeout"] = int(cfg.get("warp_connect_timeout", 30))
-    cfg["auto_refresh_interval"] = int(cfg.get("auto_refresh_interval", 60))
-    cfg["proxy_auth_enabled"] = bool(cfg.get("proxy_auth_enabled", False))
-    cfg["proxy_user"] = cfg.get("proxy_user") or ""
+    cfg = {
+        "proxy_host_omniroute": resolve_proxy_host_omniroute(env, stored),
+        "instances": resolve_config_field(env, stored, "WARP_INSTANCES", "instances", 1, int, min_val=1),
+        "proxy_mode": resolve_config_field(env, stored, "PROXY_MODE", "proxy_mode", "round-robin", str),
+        "proxy_base_port": resolve_config_field(env, stored, "PROXY_BASE_PORT", "proxy_base_port", 2080, int, min_val=1),
+        "proxy_max_rps": resolve_config_field(env, stored, "PROXY_MAX_RPS", "proxy_max_rps", 50, int, min_val=1),
+        "warp_connect_timeout": resolve_config_field(env, stored, "WARP_CONNECT_TIMEOUT", "warp_connect_timeout", 30, int, min_val=1),
+        "auto_refresh_interval": resolve_config_field(env, stored, "AUTO_REFRESH_INTERVAL", "auto_refresh_interval", 60, int, min_val=1),
+        "proxy_auth_enabled": bool(stored.get("proxy_auth_enabled", parse_bool(env.get("PROXY_AUTH_ENABLED")))),
+        "proxy_user": stored.get("proxy_user", env.get("PROXY_USER", "")),
+    }
     if include_secret:
-        cfg["proxy_password"] = cfg.get("proxy_password") or ""
+        cfg["proxy_password"] = stored.get("proxy_password", os.environ.get("PROXY_PASS", ""))
     else:
         cfg.pop("proxy_password", None)
-        cfg["proxy_password_set"] = bool(stored.get("proxy_password"))
+    cfg["proxy_password_set"] = bool(stored.get("proxy_password") or os.environ.get("PROXY_PASS"))
     return cfg
 
 
@@ -976,6 +1067,18 @@ def rollback_config(old_cfg, started_indices, stopped_indices, config_saved):
 def apply_config(new_cfg):
     with CONFIG_LOCK:
         old_cfg = get_config(True)
+        # Enforce environment variable priority over admin-config.json
+        for key, env_key in [
+            ("instances", "WARP_INSTANCES"),
+            ("proxy_mode", "PROXY_MODE"),
+            ("proxy_base_port", "PROXY_BASE_PORT"),
+            ("proxy_max_rps", "PROXY_MAX_RPS"),
+            ("warp_connect_timeout", "WARP_CONNECT_TIMEOUT"),
+            ("auto_refresh_interval", "AUTO_REFRESH_INTERVAL"),
+            ("proxy_host_omniroute", "PROXY_HOST_OMNIROUTE"),
+        ]:
+            if is_explicit_env(env_key):
+                new_cfg[key] = old_cfg[key]
         errors = validate_config(new_cfg)
         if errors:
             return {"ok": False, "errors": errors}, 400
@@ -1363,6 +1466,7 @@ def main():
     if not ok:
         print(f"Error: {error}", file=sys.stderr, flush=True)
         raise SystemExit(1)
+    sync_persisted_config()
     threading.Thread(target=auto_refresh_loop, daemon=True).start()
     port = int(os.environ.get("ADMIN_PORT", "9090"))
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)

@@ -17,35 +17,243 @@ write_file() {
     fi
 }
 
-load_admin_config() {
+sync_admin_config() {
+    if [ "${ADMIN_ENABLED:-false}" != "true" ] || [ ! -f "$ADMIN_CONFIG_FILE" ]; then
+        return 0
+    fi
+    ADMIN_CONFIG_FILE="$ADMIN_CONFIG_FILE" \
+    SYNC_INSTANCES="${ENV_WARP_INSTANCES_SET:+${WARP_INSTANCES}}" \
+    SYNC_MODE="${ENV_PROXY_MODE_SET:+${PROXY_MODE}}" \
+    SYNC_PORT="${ENV_PROXY_BASE_PORT_SET:+${PROXY_BASE_PORT}}" \
+    SYNC_RPS="${ENV_PROXY_MAX_RPS_SET:+${PROXY_MAX_RPS}}" \
+    SYNC_TIMEOUT="${ENV_WARP_CONNECT_TIMEOUT_SET:+${WARP_CONNECT_TIMEOUT}}" \
+    SYNC_INTERVAL="${ENV_AUTO_REFRESH_INTERVAL_SET:+${AUTO_REFRESH_INTERVAL}}" \
+    SYNC_HOST="${ENV_PROXY_HOST_OMNIROUTE_SET:+${PROXY_HOST_OMNIROUTE}}" \
+    python3 -c '
+import json, os, sys, tempfile
+
+path = os.environ.get("ADMIN_CONFIG_FILE")
+if not path or not os.path.isfile(path):
+    sys.exit(0)
+
+try:
+    with open(path, "r") as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(0)
+
+changed = False
+
+def update_int(key, env_var):
+    global changed
+    val = os.environ.get(env_var)
+    if val:
+        try:
+            int_val = int(val)
+            if data.get(key) != int_val:
+                data[key] = int_val
+                changed = True
+        except ValueError:
+            pass
+
+def update_str(key, env_var):
+    global changed
+    val = os.environ.get(env_var)
+    if val is not None and val != "":
+        if data.get(key) != val:
+            data[key] = val
+            changed = True
+
+update_int("instances", "SYNC_INSTANCES")
+update_str("proxy_mode", "SYNC_MODE")
+update_int("proxy_base_port", "SYNC_PORT")
+update_int("proxy_max_rps", "SYNC_RPS")
+update_int("warp_connect_timeout", "SYNC_TIMEOUT")
+update_int("auto_refresh_interval", "SYNC_INTERVAL")
+update_str("proxy_host_omniroute", "SYNC_HOST")
+
+if changed:
+    dirname = os.path.dirname(path) or "."
+    try:
+        fd, tmp = tempfile.mkstemp(dir=dirname, prefix=".admin-cfg-sync.")
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+    except (PermissionError, OSError):
+        import subprocess
+        subprocess.run(["sudo", "tee", path], input=json.dumps(data, indent=2) + "\n", text=True, capture_output=True)
+' 2>/dev/null || true
+}
+
+load_admin_config(){
+    local env_instances_set="${ENV_WARP_INSTANCES:-${WARP_INSTANCES+x}}"
+    local env_instances_val="${ENV_WARP_INSTANCES_VALUE:-${WARP_INSTANCES:-}}"
+    local env_mode_set="${ENV_PROXY_MODE:-${PROXY_MODE+x}}"
+    local env_mode_val="${ENV_PROXY_MODE_VALUE:-${PROXY_MODE:-}}"
+    local env_port_set="${ENV_PROXY_BASE_PORT:-${PROXY_BASE_PORT+x}}"
+    local env_port_val="${ENV_PROXY_BASE_PORT_VALUE:-${PROXY_BASE_PORT:-}}"
+    local env_rps_set="${ENV_PROXY_MAX_RPS:-${PROXY_MAX_RPS+x}}"
+    local env_rps_val="${ENV_PROXY_MAX_RPS_VALUE:-${PROXY_MAX_RPS:-}}"
+    local env_timeout_set="${ENV_WARP_CONNECT_TIMEOUT:-${WARP_CONNECT_TIMEOUT+x}}"
+    local env_timeout_val="${ENV_WARP_CONNECT_TIMEOUT_VALUE:-${WARP_CONNECT_TIMEOUT:-}}"
+    local env_interval_set="${ENV_AUTO_REFRESH_INTERVAL:-${AUTO_REFRESH_INTERVAL+x}}"
+    local env_interval_val="${ENV_AUTO_REFRESH_INTERVAL_VALUE:-${AUTO_REFRESH_INTERVAL:-}}"
+    local env_host_val="${ENV_PROXY_HOST_OMNIROUTE:-${PROXY_HOST_OMNIROUTE:-}}"
+
     if [ "${ADMIN_ENABLED:-false}" = "true" ] && [ -f "$ADMIN_CONFIG_FILE" ]; then
-        local env_proxy_host_omniroute="${ENV_PROXY_HOST_OMNIROUTE:-${PROXY_HOST_OMNIROUTE:-}}"
-        local persisted_proxy_host_omniroute
-        WARP_INSTANCES=$(jq -r '.instances // env.WARP_INSTANCES // "1"' "$ADMIN_CONFIG_FILE")
-        PROXY_MODE=$(jq -r '.proxy_mode // env.PROXY_MODE // "round-robin"' "$ADMIN_CONFIG_FILE")
-        PROXY_BASE_PORT=$(jq -r '.proxy_base_port // env.PROXY_BASE_PORT // "2080"' "$ADMIN_CONFIG_FILE")
-        persisted_proxy_host_omniroute=$(jq -r '.proxy_host_omniroute // ""' "$ADMIN_CONFIG_FILE")
-        if [ -n "$env_proxy_host_omniroute" ]; then
-            PROXY_HOST_OMNIROUTE="$env_proxy_host_omniroute"
-        elif [ -n "$persisted_proxy_host_omniroute" ]; then
-            PROXY_HOST_OMNIROUTE="$persisted_proxy_host_omniroute"
-        elif [ -n "${PROXY_HOST:-}" ]; then
-            PROXY_HOST_OMNIROUTE="$PROXY_HOST"
-        else
-            PROXY_HOST_OMNIROUTE=""
-        fi
-        PROXY_MAX_RPS=$(jq -r '.proxy_max_rps // env.PROXY_MAX_RPS // "50"' "$ADMIN_CONFIG_FILE")
-        WARP_CONNECT_TIMEOUT=$(jq -r '.warp_connect_timeout // env.WARP_CONNECT_TIMEOUT // "30"' "$ADMIN_CONFIG_FILE")
-        AUTO_REFRESH_INTERVAL=$(jq -r '.auto_refresh_interval // env.AUTO_REFRESH_INTERVAL // "60"' "$ADMIN_CONFIG_FILE")
+        local persisted_instances persisted_mode persisted_port persisted_host
+        local persisted_rps persisted_timeout persisted_interval
+
+        persisted_instances=$(jq -r '.instances // ""' "$ADMIN_CONFIG_FILE")
+        persisted_mode=$(jq -r '.proxy_mode // ""' "$ADMIN_CONFIG_FILE")
+        persisted_port=$(jq -r '.proxy_base_port // ""' "$ADMIN_CONFIG_FILE")
+        persisted_host=$(jq -r '.proxy_host_omniroute // ""' "$ADMIN_CONFIG_FILE")
+        persisted_rps=$(jq -r '.proxy_max_rps // ""' "$ADMIN_CONFIG_FILE")
+        persisted_timeout=$(jq -r '.warp_connect_timeout // ""' "$ADMIN_CONFIG_FILE")
+        persisted_interval=$(jq -r '.auto_refresh_interval // ""' "$ADMIN_CONFIG_FILE")
         PROXY_AUTH_ENABLED=$(jq -r '.proxy_auth_enabled // false' "$ADMIN_CONFIG_FILE")
         CFG_PROXY_USER=$(jq -r '.proxy_user // ""' "$ADMIN_CONFIG_FILE")
         CFG_PROXY_PASS=$(jq -r '.proxy_password // ""' "$ADMIN_CONFIG_FILE")
+
+        if [ -n "$env_instances_set" ] && [ -n "$env_instances_val" ]; then
+            WARP_INSTANCES="$env_instances_val"
+            ENV_WARP_INSTANCES_SET="true"
+        elif [ -n "$persisted_instances" ]; then
+            WARP_INSTANCES="$persisted_instances"
+            ENV_WARP_INSTANCES_SET=""
+        else
+    WARP_INSTANCES="${WARP_INSTANCES:-1}"
+    ENV_WARP_INSTANCES_SET=""
+  fi
+  export ENV_WARP_INSTANCES_SET
+  export WARP_INSTANCES
+
+  if [ -n "$env_mode_set" ] && [ -n "$env_mode_val" ]; then
+            PROXY_MODE="$env_mode_val"
+            ENV_PROXY_MODE_SET="true"
+        elif [ -n "$persisted_mode" ]; then
+            PROXY_MODE="$persisted_mode"
+            ENV_PROXY_MODE_SET=""
+        else
+            PROXY_MODE="${PROXY_MODE:-round-robin}"
+            ENV_PROXY_MODE_SET=""
+        fi
+
+        if [ -n "$env_port_set" ] && [ -n "$env_port_val" ]; then
+            PROXY_BASE_PORT="$env_port_val"
+            ENV_PROXY_BASE_PORT_SET="true"
+        elif [ -n "$persisted_port" ]; then
+            PROXY_BASE_PORT="$persisted_port"
+            ENV_PROXY_BASE_PORT_SET=""
+        else
+            PROXY_BASE_PORT="${PROXY_BASE_PORT:-2080}"
+            ENV_PROXY_BASE_PORT_SET=""
+        fi
+
+        if [ -n "$env_host_val" ]; then
+            PROXY_HOST_OMNIROUTE="$env_host_val"
+            ENV_PROXY_HOST_OMNIROUTE_SET="true"
+        elif [ -n "$persisted_host" ]; then
+            PROXY_HOST_OMNIROUTE="$persisted_host"
+            ENV_PROXY_HOST_OMNIROUTE_SET=""
+        elif [ -n "${PROXY_HOST:-}" ]; then
+            PROXY_HOST_OMNIROUTE="$PROXY_HOST"
+            ENV_PROXY_HOST_OMNIROUTE_SET="true"
+        else
+            PROXY_HOST_OMNIROUTE=""
+            ENV_PROXY_HOST_OMNIROUTE_SET=""
+        fi
+
+        if [ -n "$env_rps_set" ] && [ -n "$env_rps_val" ]; then
+            PROXY_MAX_RPS="$env_rps_val"
+            ENV_PROXY_MAX_RPS_SET="true"
+        elif [ -n "$persisted_rps" ]; then
+            PROXY_MAX_RPS="$persisted_rps"
+            ENV_PROXY_MAX_RPS_SET=""
+        else
+            PROXY_MAX_RPS="${PROXY_MAX_RPS:-50}"
+            ENV_PROXY_MAX_RPS_SET=""
+        fi
+
+        if [ -n "$env_timeout_set" ] && [ -n "$env_timeout_val" ]; then
+            WARP_CONNECT_TIMEOUT="$env_timeout_val"
+            ENV_WARP_CONNECT_TIMEOUT_SET="true"
+        elif [ -n "$persisted_timeout" ]; then
+            WARP_CONNECT_TIMEOUT="$persisted_timeout"
+            ENV_WARP_CONNECT_TIMEOUT_SET=""
+        else
+            WARP_CONNECT_TIMEOUT="${WARP_CONNECT_TIMEOUT:-30}"
+            ENV_WARP_CONNECT_TIMEOUT_SET=""
+        fi
+
+        if [ -n "$env_interval_set" ] && [ -n "$env_interval_val" ]; then
+            AUTO_REFRESH_INTERVAL="$env_interval_val"
+            ENV_AUTO_REFRESH_INTERVAL_SET="true"
+        elif [ -n "$persisted_interval" ]; then
+            AUTO_REFRESH_INTERVAL="$persisted_interval"
+            ENV_AUTO_REFRESH_INTERVAL_SET=""
+        else
+            AUTO_REFRESH_INTERVAL="${AUTO_REFRESH_INTERVAL:-60}"
+            ENV_AUTO_REFRESH_INTERVAL_SET=""
+        fi
+
         if [ "$PROXY_AUTH_ENABLED" = "true" ]; then
             PROXY_USER="$CFG_PROXY_USER"
             PROXY_PASS="$CFG_PROXY_PASS"
         else
             PROXY_USER=""
             PROXY_PASS=""
+        fi
+
+        sync_admin_config
+    else
+        if [ -n "$env_instances_set" ] && [ -n "$env_instances_val" ]; then
+            WARP_INSTANCES="$env_instances_val"
+            ENV_WARP_INSTANCES_SET="true"
+        else
+    WARP_INSTANCES="${WARP_INSTANCES:-1}"
+    ENV_WARP_INSTANCES_SET=""
+  fi
+  export ENV_WARP_INSTANCES_SET
+  export WARP_INSTANCES
+
+  if [ -n "$env_mode_set" ] && [ -n "$env_mode_val" ]; then
+            PROXY_MODE="$env_mode_val"
+        else
+            PROXY_MODE="${PROXY_MODE:-round-robin}"
+        fi
+
+        if [ -n "$env_port_set" ] && [ -n "$env_port_val" ]; then
+            PROXY_BASE_PORT="$env_port_val"
+        else
+            PROXY_BASE_PORT="${PROXY_BASE_PORT:-2080}"
+        fi
+
+        if [ -n "$env_rps_set" ] && [ -n "$env_rps_val" ]; then
+            PROXY_MAX_RPS="$env_rps_val"
+        else
+            PROXY_MAX_RPS="${PROXY_MAX_RPS:-50}"
+        fi
+
+        if [ -n "$env_timeout_set" ] && [ -n "$env_timeout_val" ]; then
+            WARP_CONNECT_TIMEOUT="$env_timeout_val"
+        else
+            WARP_CONNECT_TIMEOUT="${WARP_CONNECT_TIMEOUT:-30}"
+        fi
+
+        if [ -n "$env_interval_set" ] && [ -n "$env_interval_val" ]; then
+            AUTO_REFRESH_INTERVAL="$env_interval_val"
+        else
+            AUTO_REFRESH_INTERVAL="${AUTO_REFRESH_INTERVAL:-60}"
+        fi
+
+        if [ -n "$env_host_val" ]; then
+            PROXY_HOST_OMNIROUTE="$env_host_val"
+        elif [ -n "${PROXY_HOST:-}" ]; then
+            PROXY_HOST_OMNIROUTE="$PROXY_HOST"
+        else
+            PROXY_HOST_OMNIROUTE=""
         fi
     fi
 }

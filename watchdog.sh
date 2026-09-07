@@ -10,6 +10,15 @@
 
 set -euo pipefail
 
+# Explicit container environment tracking
+if [ "${ENV_WARP_INSTANCES_SET:-}" != "true" ] && [ "${ENV_WARP_INSTANCES_SET:-}" != "false" ]; then
+    if [ -n "${WARP_INSTANCES+x}" ] && [ -n "$WARP_INSTANCES" ]; then
+    ENV_WARP_INSTANCES_SET="true"
+  else
+    ENV_WARP_INSTANCES_SET="false"
+  fi
+fi
+
 WARP_INSTANCES=${WARP_INSTANCES:-1}
 WARP_WATCHDOG_ENABLED=${WARP_WATCHDOG_ENABLED:-true}
 WARP_WATCHDOG_INTERVAL=${WARP_WATCHDOG_INTERVAL:-30}
@@ -54,14 +63,21 @@ log() {
 
 # Re-read instance count from admin config; init state for any new instances
 reload_instance_count() {
-  local new_count="$WARP_INSTANCES"
-  if [ -f "$ADMIN_CONFIG_FILE" ] && command -v jq &>/dev/null; then
-    local val
-    val=$(jq -r '.instances // empty' "$ADMIN_CONFIG_FILE" 2>/dev/null) || true
-    if [[ "$val" =~ ^[0-9]+$ ]] && [ "$val" -ge 1 ]; then
-      new_count="$val"
+    if [ "${ENV_WARP_INSTANCES_SET:-false}" = "true" ]; then
+        return 0
     fi
-  fi
+    local new_count="$WARP_INSTANCES"
+    if [ -f "$ADMIN_CONFIG_FILE" ]; then
+        local val=""
+        if command -v jq &>/dev/null; then
+            val=$(jq -r '.instances // empty' "$ADMIN_CONFIG_FILE" 2>/dev/null) || true
+        elif command -v python3 &>/dev/null; then
+            val=$(python3 -c "import json, sys; d=json.load(open(sys.argv[1])); print(d.get('instances', ''))" "$ADMIN_CONFIG_FILE" 2>/dev/null) || true
+        fi
+        if [[ "$val" =~ ^[0-9]+$ ]] && [ "$val" -ge 1 ]; then
+            new_count="$val"
+        fi
+    fi
   if [ "$new_count" != "$WARP_INSTANCES" ]; then
     if [ "$new_count" -gt "$WARP_INSTANCES" ]; then
       local i
@@ -439,6 +455,7 @@ main() {
 
     log "starting (instances=${WARP_INSTANCES}, interval=${WARP_WATCHDOG_INTERVAL}s, threshold=${WARP_WATCHDOG_FAILURE_THRESHOLD}, recovery_timeout=${WARP_WATCHDOG_RECOVERY_TIMEOUT}s, cooldown=${WARP_WATCHDOG_RESTART_COOLDOWN}s)"
 
+    reload_instance_count
     init_state
     write_state
 
@@ -450,8 +467,10 @@ main() {
     for i in $(seq 0 $((WARP_INSTANCES - 1))); do
             process_instance "$i"
         done
-        sleep "$WARP_WATCHDOG_INTERVAL"
-    done
+  sleep "$WARP_WATCHDOG_INTERVAL"
+ done
 }
 
-main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi
