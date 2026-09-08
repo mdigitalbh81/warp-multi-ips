@@ -13,6 +13,12 @@
 
 set -e
 
+if [ -f "/warp-common.sh" ]; then
+    . /warp-common.sh
+elif [ -f "$(dirname "${BASH_SOURCE[0]}")/warp-common.sh" ]; then
+    . "$(dirname "${BASH_SOURCE[0]}")/warp-common.sh"
+fi
+
 INSTANCE=${1:?"Instance number required"}
 PORT=${2:?"Port number required"}
 LICENSE_KEYS_CSV=${3:-}
@@ -83,7 +89,7 @@ sudo env \
     STATE_DIRECTORY="$DATA_DIR" \
     RUNTIME_DIRECTORY="$RUN_DIR" \
     DBUS_SYSTEM_BUS_ADDRESS="unix:path=${DBUS_SOCK}" \
-    warp-svc --accept-tos &
+    warp-svc --accept-tos > >(filter_warp_logs) 2>&1 &
 WARP_PID=$!
 echo "$WARP_PID" > "$PID_FILE"
 

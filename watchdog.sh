@@ -10,6 +10,12 @@
 
 set -euo pipefail
 
+if [ -f "/warp-common.sh" ]; then
+    . /warp-common.sh
+elif [ -f "$(dirname "${BASH_SOURCE[0]}")/warp-common.sh" ]; then
+    . "$(dirname "${BASH_SOURCE[0]}")/warp-common.sh"
+fi
+
 # Explicit container environment tracking
 if [ "${ENV_WARP_INSTANCES_SET:-}" != "true" ] && [ "${ENV_WARP_INSTANCES_SET:-}" != "false" ]; then
     if [ -n "${WARP_INSTANCES+x}" ] && [ -n "$WARP_INSTANCES" ]; then
@@ -20,6 +26,7 @@ if [ "${ENV_WARP_INSTANCES_SET:-}" != "true" ] && [ "${ENV_WARP_INSTANCES_SET:-}
 fi
 
 WARP_INSTANCES=${WARP_INSTANCES:-1}
+MAX_WARP_INSTANCES=${MAX_WARP_INSTANCES:-45}
 WARP_WATCHDOG_ENABLED=${WARP_WATCHDOG_ENABLED:-true}
 WARP_WATCHDOG_INTERVAL=${WARP_WATCHDOG_INTERVAL:-30}
 WARP_WATCHDOG_FAILURE_THRESHOLD=${WARP_WATCHDOG_FAILURE_THRESHOLD:-3}
@@ -75,7 +82,11 @@ reload_instance_count() {
             val=$(python3 -c "import json, sys; d=json.load(open(sys.argv[1])); print(d.get('instances', ''))" "$ADMIN_CONFIG_FILE" 2>/dev/null) || true
         fi
         if [[ "$val" =~ ^[0-9]+$ ]] && [ "$val" -ge 1 ]; then
-            new_count="$val"
+            if [ "$val" -le "$MAX_WARP_INSTANCES" ]; then
+                new_count="$val"
+            else
+                log "ignoring invalid instance count from config: $val (max: $MAX_WARP_INSTANCES)"
+            fi
         fi
     fi
   if [ "$new_count" != "$WARP_INSTANCES" ]; then
@@ -297,7 +308,7 @@ restart_instance_warp() {
         STATE_DIRECTORY="$data_dir" \
         RUNTIME_DIRECTORY="$run_dir" \
         DBUS_SYSTEM_BUS_ADDRESS="unix:path=${dbus_sock}" \
-        warp-svc --accept-tos &
+        warp-svc --accept-tos > >(filter_warp_logs) 2>&1 &
     local new_pid=$!
     echo "$new_pid" > "$pid_file"
 
@@ -454,6 +465,11 @@ main() {
     fi
 
     log "starting (instances=${WARP_INSTANCES}, interval=${WARP_WATCHDOG_INTERVAL}s, threshold=${WARP_WATCHDOG_FAILURE_THRESHOLD}, recovery_timeout=${WARP_WATCHDOG_RECOVERY_TIMEOUT}s, cooldown=${WARP_WATCHDOG_RESTART_COOLDOWN}s)"
+
+    if [ "$WARP_INSTANCES" -gt "$MAX_WARP_INSTANCES" ]; then
+        log "Error: WARP_INSTANCES ($WARP_INSTANCES) exceeds MAX_WARP_INSTANCES ($MAX_WARP_INSTANCES)"
+        exit 1
+    fi
 
     reload_instance_count
     init_state

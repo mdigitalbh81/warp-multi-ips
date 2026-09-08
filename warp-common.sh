@@ -7,6 +7,48 @@ ADMIN_CONFIG_FILE=${ADMIN_CONFIG_FILE:-${WARP_DATA_DIR}/admin-config.json}
 GOST_CONFIG_FILE=${GOST_CONFIG_FILE:-/tmp/gost-config.yaml}
 HEALTHY_PORTS_FILE=${HEALTHY_PORTS_FILE:-/tmp/healthy-warp-ports}
 WARP_ENV_FILE=${WARP_ENV_FILE:-/tmp/warp-admin-env}
+MAX_WARP_INSTANCES=${MAX_WARP_INSTANCES:-45}
+export MAX_WARP_INSTANCES
+PROXY_LOG_LEVEL=${PROXY_LOG_LEVEL:-warn}
+export PROXY_LOG_LEVEL
+export GOST_LOGGER_LEVEL="${PROXY_LOG_LEVEL}"
+WARP_LOG_LEVEL=${WARP_LOG_LEVEL:-warn}
+export WARP_LOG_LEVEL
+NORMAL_SHUTDOWN_DEREGISTERS=${NORMAL_SHUTDOWN_DEREGISTERS:-false}
+export NORMAL_SHUTDOWN_DEREGISTERS
+
+filter_warp_logs() {
+    local level="${WARP_LOG_LEVEL:-warn}"
+    level=$(echo "$level" | tr '[:upper:]' '[:lower:]')
+    if [ "$level" = "debug" ]; then
+        cat
+        return
+    fi
+    awk -v lvl="$level" '
+    {
+        line = $0
+        low = tolower(line)
+        if (low ~ /socks greeting failed/ && (low ~ /unexpected ?eof/ || low ~ /unexpectedeof/)) { next }
+        is_err = (line ~ /(^|[[:space:]\[])(ERROR|FATAL)([[:space:]\]:]|$)/ || line ~ /level=(error|fatal)/ || low ~ /(^|[[:space:]])panic(:|[[:space:]]|$)/)
+		is_warn = (line ~ /(^|[[:space:]\[])WARN([[:space:]\]:]|$)/ || line ~ /level=warn/)
+		if (lvl == "error") {
+			if (is_err) { print line; fflush() }
+			next
+		}
+		if (is_err || is_warn) {
+			print line; fflush()
+			next
+		}
+		if (low ~ /(masquetunnelstatsupdated|warp-network-health-stats|tunnel_stats_reporting_task|warp-connection-stats)/) { next }
+		if (line ~ /(^|[[:space:]\[])(DEBUG|TRACE)([[:space:]\]:]|$)/) { next }
+		if (line ~ /(^|[[:space:]\[])INFO([[:space:]\]:]|$)/) {
+			if (low ~ /(connect|reconnect|disconnect|register|login|auth|fail|lost|loss|restart|shutdown)/) { print line; fflush() }
+			next
+		}
+		print line; fflush()
+	    }'
+}
+export -f filter_warp_logs 2>/dev/null || true
 
 write_file() {
     local file="$1"
@@ -310,8 +352,8 @@ validate_runtime_config() {
         exit 1
     fi
 
-    if ! [[ "$WARP_INSTANCES" =~ ^[0-9]+$ ]] || [ "$WARP_INSTANCES" -lt 1 ]; then
-        echo "Error: WARP_INSTANCES must be a positive integer"
+    if ! [[ "$WARP_INSTANCES" =~ ^[0-9]+$ ]] || [ "$WARP_INSTANCES" -lt 1 ] || [ "$WARP_INSTANCES" -gt "$MAX_WARP_INSTANCES" ]; then
+        echo "Error: WARP_INSTANCES must be an integer between 1 and ${MAX_WARP_INSTANCES} (got: ${WARP_INSTANCES})"
         exit 1
     fi
 
@@ -431,6 +473,8 @@ generate_gost_config_roundrobin() {
     printf "%b" "$healthy_ports" > "$healthy_file"
 
     cat > "$config_file" <<EOF
+log:
+  level: ${PROXY_LOG_LEVEL:-warn}
 services:
 - name: socks5-warp
   addr: ":1080"
@@ -462,8 +506,8 @@ services:
       password: ${ss_pass}
   listener:
     type: tcp
-  climiter: climiter-0
-  rlimiter: rlimiter-0${admission_ref}
+    climiter: climiter-0
+    rlimiter: rlimiter-0${admission_ref}
 
 - name: socks5-direct
   addr: ":1081"
@@ -471,8 +515,8 @@ services:
     type: socks5${proxy_auth}
   listener:
     type: tcp
-  climiter: climiter-0
-  rlimiter: rlimiter-0${admission_ref}
+    climiter: climiter-0
+    rlimiter: rlimiter-0${admission_ref}
 
 - name: http-direct
   addr: ":8081"
@@ -480,8 +524,8 @@ services:
     type: http${proxy_auth}
   listener:
     type: tcp
-  climiter: climiter-0
-  rlimiter: rlimiter-0${admission_ref}
+    climiter: climiter-0
+    rlimiter: rlimiter-0${admission_ref}
 
 - name: ss-direct
   addr: ":8389"
@@ -541,12 +585,16 @@ generate_gost_config_dedicated() {
     local healthy_ports=""
 
     for i in $(seq 0 $((WARP_INSTANCES - 1))); do
-        if [ -f "${verify_dir}/${i}" ]; then
-            local warp_port=$((40000 + i))
-            local proxy_port=$((PROXY_BASE_PORT + i))
+        local warp_port=$((40000 + i))
+        local proxy_port=$((PROXY_BASE_PORT + i))
+        if [ -n "$verify_dir" ] && [ -f "${verify_dir}/${i}" ]; then
             healthy_ports="${healthy_ports}${warp_port}\n"
+            echo "[dedicated] WARP instance $((i + 1)) -> 127.0.0.1:${warp_port} proxy :${proxy_port} (verified)"
+        else
+            echo "[dedicated] WARP instance $((i + 1)) -> 127.0.0.1:${warp_port} proxy :${proxy_port} (unverified)"
+        fi
 
-            dedicated_services="${dedicated_services}
+        dedicated_services="${dedicated_services}
 - name: socks5-warp-${i}
   addr: \":${proxy_port}\"
   handler:
@@ -570,15 +618,13 @@ generate_gost_config_dedicated() {
       dialer:
         type: tcp
 "
-            echo "[dedicated] WARP instance $((i+1)) -> 127.0.0.1:${warp_port} -> proxy :${proxy_port}"
-        else
-            echo "[dedicated] WARP instance $((i+1)) -> SKIPPED (failed verification)"
-        fi
     done
 
     printf "%b" "$healthy_ports" > "$healthy_file"
 
     cat > "$config_file" <<EOF
+log:
+  level: ${PROXY_LOG_LEVEL:-warn}
 services:
 ${dedicated_services}
 - name: socks5-direct

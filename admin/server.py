@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import base64
+import concurrent.futures
 import hashlib
 import hmac
 import json
@@ -31,7 +32,7 @@ WATCHDOG_STATE_FILE = Path(os.environ.get("WATCHDOG_STATE_FILE", "/tmp/watchdog-
 STATIC_DIR = Path(os.environ.get("ADMIN_STATIC_DIR", Path(__file__).resolve().parent / "static"))
 TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
 COMMON_SH = "/warp-common.sh"
-MAX_INSTANCES = int(os.environ.get("ADMIN_MAX_INSTANCES", "200"))
+MAX_INSTANCES = int(os.environ.get("MAX_WARP_INSTANCES") or os.environ.get("ADMIN_MAX_INSTANCES") or "45")
 INITIAL_ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 INITIAL_ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 ADMIN_AUTH_MAX_FAILURES = int(os.environ.get("ADMIN_AUTH_MAX_FAILURES", "5"))
@@ -70,6 +71,12 @@ STATE = {
     "last_refresh_finished": None,
 }
 
+# Grace period (seconds) for transient trace failures: when the last confirmed
+# warp=on is within this window *and* process/internal SOCKS remain alive, the
+# instance keeps its previous warp_connected state instead of flipping to False.
+WARP_CONNECTED_GRACE_SECONDS = int(os.environ.get("WARP_CONNECTED_GRACE_SECONDS", "90"))
+
+_WARP_LAST_CONFIRMED = {}  # index -> time.time() of last successful warp=on trace
 RECOVERY_LOCKS = {}   # per-instance threading.Lock for manual recovery
 
 
@@ -698,6 +705,7 @@ def validate_config(cfg):
 
 def public_config():
     cfg = get_config(False)
+    cfg["max_instances"] = MAX_INSTANCES
     cfg["admin_enabled"] = parse_bool(os.environ.get("ADMIN_ENABLED", "false"))
     cfg["admin_port"] = int(os.environ.get("ADMIN_PORT", "9090"))
     cfg["config_source"] = "persistent" if CONFIG_FILE.exists() else "environment"
@@ -705,10 +713,21 @@ def public_config():
     return cfg
 
 
-def port_open(port):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.settimeout(0.35)
-        return sock.connect_ex(("127.0.0.1", int(port))) == 0
+def port_open(port, timeout=0.35):
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            if sock.connect_ex(("127.0.0.1", int(port))) != 0:
+                return False
+            # SOCKS5 greeting handshake (RFC 1928) avoids "Socks greeting failed" / "unexpected EOF"
+            try:
+                sock.sendall(b"\x05\x02\x00\x02")
+                resp = sock.recv(2)
+                return resp in (b"\x05\x00", b"\x05\x02")
+            except (socket.timeout, OSError):
+                return False
+    except Exception:
+        return False
 
 
 def get_container_ips():
@@ -763,9 +782,27 @@ def proxy_url(port, cfg):
     return f"socks5h://127.0.0.1:{port}"
 
 
-def trace_for_proxy(port, cfg):
+def trace_for_instance(internal_port, timeout=8):
     result = subprocess.run(
-        ["curl", "-fsS", "--max-time", "20", "--proxy", proxy_url(port, cfg), TRACE_URL],
+        ["curl", "-fsS", "--max-time", str(timeout), "--socks5-hostname", f"127.0.0.1:{internal_port}", TRACE_URL],
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "trace request failed")
+    data = {}
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            data[key] = value
+    return data
+
+
+def trace_for_proxy(port, cfg, timeout=10):
+    if port >= 40000:
+        return trace_for_instance(port, timeout=timeout)
+    result = subprocess.run(
+        ["curl", "-fsS", "--max-time", str(timeout), "--proxy", proxy_url(port, cfg), TRACE_URL],
         text=True,
         capture_output=True,
     )
@@ -789,42 +826,89 @@ def refresh_instance(index, cfg):
         _CONTAINER_IPS_CACHE["ts"] = now
     container_ips = _CONTAINER_IPS_CACHE["ips"]
     internal_port = 40000 + index
+    process_running = instance_process_alive(index)
+    internal_socks_ready = port_open(internal_port)
+    dedicated_proxy_ready = port_open(proxy_port)
+    cached_item = STATE.get("egress", {}).get(index + 1, {})
+    wd = get_watchdog_instance(index)
+    prev_egress = cached_item.get("egress_ip") or (wd.get("current_egress") if wd else None)
     item = {
         "instance": index + 1,
         "proxy_port": proxy_port,
         "internal_port": internal_port,
-        "egress_ip": None,
+        "egress_ip": prev_egress,
         "warp": False,
+        "warp_connected": False,
         "proxy_host_omniroute": proxy_host,
         "proxy_address_omniroute": proxy_address,
         "container_ips": container_ips,
-        "colo": None,
-        "country_code": None,
-        "country_name": None,
-        "location": None,
-        "process_healthy": instance_process_alive(index),
-        "proxy_healthy": port_open(proxy_port),
-        "listener_healthy": port_open(proxy_port),
-        "internal_healthy": port_open(internal_port),
+        "colo": cached_item.get("colo"),
+        "country_code": cached_item.get("country_code"),
+        "country_name": cached_item.get("country_name"),
+        "location": cached_item.get("location"),
+        "process_running": process_running,
+        "internal_socks_ready": internal_socks_ready,
+        "dedicated_proxy_ready": dedicated_proxy_ready,
+        "process_healthy": process_running,
+        "proxy_healthy": dedicated_proxy_ready,
+        "listener_healthy": dedicated_proxy_ready,
+        "internal_healthy": internal_socks_ready,
         "note": get_instance_note(index),
         "last_check": utc_now(),
         "error": None,
     }
+    if not process_running or not internal_socks_ready:
+        item["health"] = "unavailable" if not process_running else "degraded"
+        return item
+
     try:
-        trace = trace_for_proxy(proxy_port, cfg)
-        item["egress_ip"] = trace.get("ip")
+        trace = trace_for_instance(internal_port, timeout=8)
+        item["egress_ip"] = trace.get("ip") or prev_egress
         item["warp"] = trace.get("warp") in ("on", "plus")
+        item["warp_connected"] = item["warp"]
+        if item["warp"]:
+            _WARP_LAST_CONFIRMED[index] = time.time()
         colo = trace.get("colo")
         loc = trace.get("loc")
         item["colo"] = colo
         item["country_code"] = loc
         item["country_name"] = loc
         item["location"] = loc
-        item["proxy_healthy"] = True
-        item["health"] = "healthy" if item["warp"] and item["process_healthy"] else "degraded"
+        item["error"] = None
     except Exception as exc:
-        item["error"] = str(exc)
-        item["health"] = "degraded" if item["process_healthy"] or item["proxy_healthy"] else "unavailable"
+        wd_status = wd.get("status") if wd else ""
+        wd_failed = wd_status in ("offline", "degraded")
+        last_confirmed = _WARP_LAST_CONFIRMED.get(index)
+        grace_ok = (
+            last_confirmed is not None
+            and (time.time() - last_confirmed) < WARP_CONNECTED_GRACE_SECONDS
+        )
+        if not wd_failed and internal_socks_ready and process_running and grace_ok:
+            item["warp"] = True
+            item["warp_connected"] = True
+            item["error"] = f"transient egress check warning: {exc}"
+        else:
+            item["warp"] = False
+            item["warp_connected"] = False
+            if grace_ok:
+                item["error"] = str(exc)
+            elif last_confirmed is not None:
+                item["health"] = "degraded"
+                item["error"] = f"warp confirmation expired ({int(time.time() - last_confirmed)}s ago): {exc}"
+            else:
+                item["error"] = str(exc)
+
+    if wd and wd.get("recovery_status", "none") not in ("none", "", None):
+        item["health"] = "recovering"
+    elif wd and wd.get("status") in ("offline", "degraded", "recovering"):
+        item["health"] = wd.get("status")
+    elif item["warp_connected"] and process_running and internal_socks_ready and (dedicated_proxy_ready or cfg.get("proxy_mode") != "dedicated"):
+        item["health"] = "healthy"
+    elif process_running and internal_socks_ready:
+        item["health"] = "degraded"
+    else:
+        item["health"] = "unavailable" if not process_running else "degraded"
+
     return item
 
 
@@ -837,42 +921,45 @@ def refresh_all(force=False):
                 return list(STATE["egress"].values())
         STATE["last_refresh_started"] = time.time()
         results = {}
-        results_lock = threading.Lock()
-        threads = []
-
-        def worker(i):
-            item = refresh_instance(i, cfg)
-            with results_lock:
-                results[i + 1] = item
-
-        for idx in range(cfg["instances"]):
-            t = threading.Thread(target=worker, args=(idx,), daemon=True)
-            threads.append(t)
-            t.start()
-        for t in threads:
-            t.join(timeout=30)
-        for idx in range(cfg["instances"]):
-            results.setdefault(idx + 1, {
-                "instance": idx + 1,
-                "proxy_port": cfg["proxy_base_port"] + idx if cfg["proxy_mode"] == "dedicated" else 1080,
-                "proxy_host_omniroute": cfg.get("proxy_host_omniroute") or "",
-                "proxy_address_omniroute": "",
-                "container_ips": [],
-                "internal_port": 40000 + idx,
-                "egress_ip": None,
-                "warp": False,
-                "colo": None,
-                "country_code": None,
-                "country_name": None,
-                "location": None,
-                "process_healthy": instance_process_alive(idx),
-                "proxy_healthy": False,
-                "listener_healthy": False,
-                "internal_healthy": port_open(40000 + idx),
-                "health": "unavailable",
-                "last_check": utc_now(),
-                "error": "refresh timed out",
-            })
+        max_workers = min(8, max(1, cfg["instances"]))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(refresh_instance, idx, cfg): idx for idx in range(cfg["instances"])}
+            for future in concurrent.futures.as_completed(futures):
+                idx = futures[future]
+                try:
+                    results[idx + 1] = future.result()
+                except Exception as exc:
+                    cached_item = STATE.get("egress", {}).get(idx + 1, {})
+                    proxy_port = cfg["proxy_base_port"] + idx if cfg["proxy_mode"] == "dedicated" else 1080
+                    internal_port = 40000 + idx
+                    p_running = instance_process_alive(idx)
+                    s_ready = port_open(internal_port)
+                    d_ready = port_open(proxy_port)
+                    results[idx + 1] = {
+                        "instance": idx + 1,
+                        "proxy_port": proxy_port,
+                        "internal_port": internal_port,
+                    "egress_ip": cached_item.get("egress_ip"),
+                    "warp": cached_item.get("warp", False),
+                    "warp_connected": cached_item.get("warp_connected", False),
+                    "process_running": p_running,
+                        "internal_socks_ready": s_ready,
+                        "dedicated_proxy_ready": d_ready,
+                        "process_healthy": p_running,
+                        "proxy_healthy": d_ready,
+                        "listener_healthy": d_ready,
+                        "internal_healthy": s_ready,
+                        "proxy_host_omniroute": cfg.get("proxy_host_omniroute") or "",
+                        "proxy_address_omniroute": "",
+                        "container_ips": [],
+                        "colo": cached_item.get("colo"),
+                        "country_code": cached_item.get("country_code"),
+                        "country_name": cached_item.get("country_name"),
+                    "location": cached_item.get("location"),
+                    "health": cached_item.get("health", "degraded"),
+                    "last_check": utc_now(),
+                        "error": str(exc),
+                    }
         STATE["egress"] = results
         STATE["last_refresh_finished"] = time.time()
         return [results[i + 1] for i in range(cfg["instances"])]
@@ -880,11 +967,11 @@ def refresh_all(force=False):
 
 def get_instances():
     cfg = get_config(False)
-    proxy_host = cfg.get("proxy_host_omniroute") or ""
+    proxy_host = cfg.get("proxy_host_omniroute")
     container_ips = get_container_ips()
     now = time.time()
     last = STATE.get("last_refresh_finished")
-    if not last or now - last > cfg["auto_refresh_interval"]:
+    if not last or (now - last > cfg["auto_refresh_interval"]):
         threading.Thread(target=refresh_all, kwargs={"force": True}, daemon=True).start()
     cached = STATE["egress"]
     items = []
@@ -892,12 +979,19 @@ def get_instances():
         existing = cached.get(idx + 1, {})
         proxy_port = cfg["proxy_base_port"] + idx if cfg["proxy_mode"] == "dedicated" else 1080
         proxy_address = f"{proxy_host}:{proxy_port}" if proxy_host else ""
+        internal_port = 40000 + idx
+        process_running = instance_process_alive(idx)
+        internal_socks_ready = port_open(internal_port)
+        dedicated_proxy_ready = port_open(proxy_port)
+        wd = get_watchdog_instance(idx)
+
         item = {
             "instance": idx + 1,
             "proxy_port": proxy_port,
-            "internal_port": 40000 + idx,
-            "egress_ip": None,
+            "internal_port": internal_port,
+            "egress_ip": wd.get("current_egress") if wd else None,
             "warp": False,
+            "warp_connected": False,
             "proxy_host_omniroute": proxy_host,
             "proxy_address_omniroute": proxy_address,
             "container_ips": container_ips,
@@ -906,10 +1000,13 @@ def get_instances():
             "country_name": None,
             "location": None,
             "note": get_instance_note(idx),
-            "process_healthy": instance_process_alive(idx),
-            "proxy_healthy": port_open(cfg["proxy_base_port"] + idx if cfg["proxy_mode"] == "dedicated" else 1080),
-            "listener_healthy": port_open(cfg["proxy_base_port"] + idx if cfg["proxy_mode"] == "dedicated" else 1080),
-            "internal_healthy": port_open(40000 + idx),
+            "process_running": process_running,
+            "internal_socks_ready": internal_socks_ready,
+            "dedicated_proxy_ready": dedicated_proxy_ready,
+            "process_healthy": process_running,
+            "proxy_healthy": dedicated_proxy_ready,
+            "listener_healthy": dedicated_proxy_ready,
+            "internal_healthy": internal_socks_ready,
             "health": "unknown",
             "last_check": None,
             "error": None,
@@ -918,13 +1015,15 @@ def get_instances():
         item["proxy_port"] = proxy_port
         item["proxy_host_omniroute"] = proxy_host
         item["proxy_address_omniroute"] = proxy_address
-        if item["health"] == "unknown":
-            if item["process_healthy"] and item["proxy_healthy"]:
-                item["health"] = "degraded"
-            elif not item["process_healthy"] and not item["proxy_healthy"]:
-                item["health"] = "unavailable"
-        # Merge watchdog state
-        wd = get_watchdog_instance(idx)
+        if "process_running" not in existing:
+            item["process_running"] = item.get("process_healthy", process_running)
+        if "internal_socks_ready" not in existing:
+            item["internal_socks_ready"] = item.get("internal_healthy", internal_socks_ready)
+        if "dedicated_proxy_ready" not in existing:
+            item["dedicated_proxy_ready"] = item.get("proxy_healthy", dedicated_proxy_ready)
+        if "warp_connected" not in existing:
+            item["warp_connected"] = bool(item.get("warp") or item.get("health") == "healthy")
+
         if wd:
             item["watchdog"] = {
                 "status": wd.get("status", ""),
@@ -942,12 +1041,68 @@ def get_instances():
                 "current_egress": wd.get("current_egress", ""),
                 "last_egress_change": wd.get("last_egress_change", ""),
             }
-            # Use watchdog health status if available and more specific
-            wd_status = wd.get("status", "")
-            if wd_status in ("recovering", "offline", "degraded"):
-                item["health"] = wd_status
-        else:
-            item["watchdog"] = None
+            if wd.get("current_egress") and not item.get("egress_ip"):
+                item["egress_ip"] = wd["current_egress"]
+
+        wd_status = wd.get("status", "") if wd else ""
+        wd_recovery = wd.get("recovery_status", "none") if wd else "none"
+
+        if wd_recovery not in ("none", "", None) or wd_status == "recovering":
+            item["health"] = "recovering"
+        elif wd_status in ("offline", "degraded"):
+            item["health"] = wd_status
+            if wd_status == "offline":
+                item["warp"] = False
+                item["warp_connected"] = False
+        elif item.get("health") == "unknown":
+            p_alive = item.get("process_running", False)
+            s_ready = item.get("internal_socks_ready", False)
+            d_ready = item.get("dedicated_proxy_ready", False)
+            if p_alive and s_ready and d_ready:
+                # Ports are up but we have no trace evidence; do NOT assume healthy
+                item["health"] = "degraded"
+            elif p_alive or s_ready or d_ready:
+                item["health"] = "degraded"
+            else:
+                item["health"] = "unavailable"
+        elif wd_status == "healthy":
+            # Watchdog says healthy (it does real trace checks), trust its warp judgment
+            # but only set warp_connected if we also have cached trace evidence
+            if item.get("warp"):
+                item["health"] = "healthy"
+                item["warp_connected"] = True
+            else:
+                item["health"] = "degraded"
+
+        # warp_connected requires actual trace evidence; never inferred from ports alone
+        if not item.get("warp_connected"):
+            item["warp_connected"] = False
+            item["warp"] = False
+
+        # Enforce exact health criteria:
+        # dedicated requires dedicated_proxy_ready; round-robin does not.
+        is_dedicated = cfg.get("proxy_mode") == "dedicated"
+        proxy_ok = item.get("dedicated_proxy_ready", False) if is_dedicated else True
+        wd_not_failing = (
+            wd_status not in ("offline", "recovering", "degraded")
+            and wd_recovery in ("none", "", None)
+        )
+        if (
+            item.get("warp_connected")
+            and item.get("process_running")
+            and item.get("internal_socks_ready")
+            and proxy_ok
+            and wd_not_failing
+        ):
+            item["health"] = "healthy"
+        elif item.get("health") == "healthy":
+            item["health"] = "degraded"
+
+        item["process_healthy"] = item.get("process_running", False)
+        item["internal_healthy"] = item.get("internal_socks_ready", False)
+        item["proxy_healthy"] = item.get("dedicated_proxy_ready", False)
+        item["listener_healthy"] = item["proxy_healthy"]
+
         items.append(item)
     return items
 
@@ -1328,6 +1483,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({
                 "configured_instances": cfg["instances"],
                 "healthy_instances": healthy,
+                    "max_instances": MAX_INSTANCES,
                 "proxy_mode": cfg["proxy_mode"],
                 "proxy_base_port": cfg["proxy_base_port"],
                 "operation": STATE.get("operation"),

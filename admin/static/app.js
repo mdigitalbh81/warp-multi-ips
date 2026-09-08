@@ -562,6 +562,9 @@ function populateSettings() {
   if (!cfg) return;
   const form = els.settingsForm;
   form.proxy_mode.value = cfg.proxy_mode;
+  if (cfg.max_instances) {
+    form.instances.max = String(cfg.max_instances);
+  }
   form.instances.value = cfg.instances;
   form.proxy_base_port.value = cfg.proxy_base_port;
   form.proxy_host_omniroute.value = cfg.proxy_host_omniroute || "";

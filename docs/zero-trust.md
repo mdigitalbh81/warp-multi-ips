@@ -61,7 +61,7 @@ Works with all existing features:
 | Proxy auth (`PROXY_USER`/`PROXY_PASS`) | Yes | Independent of WARP enrollment |
 | Shadowsocks | Yes | Independent of WARP enrollment |
 | Direct proxy bypass | Yes | Independent of WARP enrollment |
-| Container cleanup on shutdown | Yes | `warp-cli registration delete` frees device slots |
+| Container cleanup on shutdown | Yes | Local processes stopped; persistent registrations preserved |
 
 ## Limitations
 

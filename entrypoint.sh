@@ -9,7 +9,11 @@
 
 set -e
 
-. /warp-common.sh
+if [ -f "/warp-common.sh" ]; then
+    . /warp-common.sh
+elif [ -f "$(dirname "${BASH_SOURCE[0]}")/warp-common.sh" ]; then
+    . "$(dirname "${BASH_SOURCE[0]}")/warp-common.sh"
+fi
 
 # Preserve initial explicit environment variables before loading configs
 ENV_WARP_INSTANCES="${WARP_INSTANCES+x}"
@@ -117,7 +121,7 @@ if [ "$WARP_INSTANCES" -eq 1 ] && [ "$PROXY_MODE" != "dedicated" ] && [ "${ADMIN
     fi
 
     # start the daemon
-    sudo warp-svc --accept-tos &
+    sudo warp-svc --accept-tos > >(filter_warp_logs) 2>&1 &
 
     # wait for the daemon to be ready
     MAX_WAIT=${WARP_CONNECT_TIMEOUT:-30}
@@ -368,7 +372,7 @@ if [ "$READY_COUNT" -eq 0 ]; then
     exit 1
 fi
 
-# ---- generate GOST config (only include verified instances) ----
+# ---- generate GOST config (dedicated: all instances; round-robin: verified instances) ----
 if [ "$PROXY_MODE" = "dedicated" ]; then
     generate_gost_config_dedicated "$VERIFY_DIR"
 else
@@ -379,7 +383,7 @@ rm -rf "$VERIFY_DIR"
 # ---- summary ----
 echo ""
 if [ "$PROXY_MODE" = "dedicated" ]; then
-    echo "=== Proxy Endpoints (dedicated, ${READY_COUNT} instances) ==="
+    echo "=== Proxy Endpoints (dedicated, ${READY_COUNT}/${WARP_INSTANCES} instances ready) ==="
     for i in $(seq 0 $((WARP_INSTANCES - 1))); do
         DPORT=$((PROXY_BASE_PORT + i))
         echo "  SOCKS5 instance $((i+1)) : :${DPORT} -> WARP $((i+1))"
@@ -410,18 +414,11 @@ echo ""
 # ---- cleanup on shutdown ----
 cleanup() {
     echo "Shutting down ${WARP_INSTANCES} WARP instances..."
-    # Deregister devices so they don't count against the WARP+ per-key limit
-    # (or Zero Trust's 50-device limit). Without this, each container recreation
-    # would leave orphaned device registrations on Cloudflare's side.
-    for i in $(seq 0 $((WARP_INSTANCES - 1))); do
-        local run="/run/warp-${i}"
-        local dbus="/run/dbus-${i}/system_bus_socket"
-        sudo env RUNTIME_DIRECTORY="$run" DBUS_SYSTEM_BUS_ADDRESS="unix:path=${dbus}" \
-            warp-cli --accept-tos registration delete 2>/dev/null || true
-    done
     for pid in "${INSTANCE_PIDS[@]}"; do
         sudo kill "$pid" 2>/dev/null || true
     done
+    sudo pkill -f "warp-svc" 2>/dev/null || true
+    sudo pkill -f "dbus-daemon.*dbus-" 2>/dev/null || true
     kill "$ADMIN_PID" 2>/dev/null || true
     kill "$GOST_PID" 2>/dev/null || true
     kill "$WATCHDOG_PID" 2>/dev/null || true

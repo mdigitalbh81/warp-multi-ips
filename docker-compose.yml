@@ -5,6 +5,11 @@ services:
       dockerfile: Dockerfile
 
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
 
     cap_add:
       - NET_ADMIN
@@ -13,10 +18,10 @@ services:
       - /dev/net/tun:/dev/net/tun
 
     ports:
-      - "2080-2279:2080-2279"
+      - "2080-2124:2080-2124"
 
     environment:
-      WARP_INSTANCES: "${WARP_INSTANCES:-50}"
+      WARP_INSTANCES: "${WARP_INSTANCES:-20}"
       PROXY_MODE: "dedicated"
       PROXY_BASE_PORT: "2080"
 
