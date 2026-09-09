@@ -121,7 +121,7 @@ class OmniRouteExportTests(unittest.TestCase):
         ]))
         self.server = load_server(self.tmp)
         self.server.get_container_ips = lambda: []
-        self.server.port_open = lambda port: False
+        self.server.listener_present = lambda port, listening_ports=None: False
         self.server.instance_process_alive = lambda index: False
         self.server.get_watchdog_instance = lambda index: {}
         self.server.get_instance_note = lambda index: "" if index != 0 else "primary"

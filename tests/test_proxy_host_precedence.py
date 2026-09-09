@@ -111,7 +111,7 @@ class ProxyHostPrecedenceTests(unittest.TestCase):
         })
         server = load_server(self.tmp)
         server.get_container_ips = lambda: []
-        server.port_open = lambda port: False
+        server.listener_present = lambda port, listening_ports=None: False
         server.instance_process_alive = lambda index: False
         server.get_instance_note = lambda index: ""
         server.get_watchdog_instance = lambda index: {}

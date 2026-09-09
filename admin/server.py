@@ -194,7 +194,7 @@ def manual_reconnect_instance(index):
         port = 40000 + index
         deadline = time.time() + 30
         while time.time() < deadline:
-            if port_open(port):
+            if listener_present(port):
                 cfg = get_config(True)
                 try:
                     trace = trace_for_proxy(port, cfg)
@@ -281,12 +281,12 @@ def manual_restart_instance(index):
                  f"DBUS_SYSTEM_BUS_ADDRESS=unix:path={dbus_sock}",
                  "warp-cli", "--accept-tos"] + cmd,
                 capture_output=True, text=True, timeout=15,
-            )
+       )
 
         # Verify
         deadline = time.time() + 30
         while time.time() < deadline:
-            if port_open(port):
+            if listener_present(port):
                 try:
                     trace = trace_for_proxy(port, cfg)
                     if trace.get("warp") in ("on", "plus"):
@@ -713,21 +713,33 @@ def public_config():
     return cfg
 
 
-def port_open(port, timeout=0.35):
+def get_listening_ports():
+    """Read local TCP/TCP6 listening ports passively from /proc without socket connect."""
+    ports = set()
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path, "r") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 4 and parts[3].upper() == "0A":
+                        try:
+                            ports.add(int(parts[1].rsplit(":", 1)[1], 16))
+                        except (ValueError, IndexError):
+                            pass
+        except OSError:
+            pass
+    return ports
+
+
+def listener_present(port, listening_ports=None):
+    """Check local TCP port LISTEN state passively without opening connections."""
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout)
-            if sock.connect_ex(("127.0.0.1", int(port))) != 0:
-                return False
-            # SOCKS5 greeting handshake (RFC 1928) avoids "Socks greeting failed" / "unexpected EOF"
-            try:
-                sock.sendall(b"\x05\x02\x00\x02")
-                resp = sock.recv(2)
-                return resp in (b"\x05\x00", b"\x05\x02")
-            except (socket.timeout, OSError):
-                return False
-    except Exception:
+        port_int = int(port)
+    except (TypeError, ValueError):
         return False
+    if listening_ports is not None:
+        return port_int in listening_ports
+    return port_int in get_listening_ports()
 
 
 def get_container_ips():
@@ -816,7 +828,7 @@ def trace_for_proxy(port, cfg, timeout=10):
     return data
 
 
-def refresh_instance(index, cfg):
+def refresh_instance(index, cfg, listening_ports=None):
     proxy_port = cfg["proxy_base_port"] + index if cfg["proxy_mode"] == "dedicated" else 1080
     proxy_host = cfg.get("proxy_host_omniroute") or ""
     proxy_address = f"{proxy_host}:{proxy_port}" if proxy_host else ""
@@ -827,8 +839,8 @@ def refresh_instance(index, cfg):
     container_ips = _CONTAINER_IPS_CACHE["ips"]
     internal_port = 40000 + index
     process_running = instance_process_alive(index)
-    internal_socks_ready = port_open(internal_port)
-    dedicated_proxy_ready = port_open(proxy_port)
+    internal_socks_ready = listener_present(internal_port, listening_ports=listening_ports)
+    dedicated_proxy_ready = listener_present(proxy_port, listening_ports=listening_ports)
     cached_item = STATE.get("egress", {}).get(index + 1, {})
     wd = get_watchdog_instance(index)
     prev_egress = cached_item.get("egress_ip") or (wd.get("current_egress") if wd else None)
@@ -921,9 +933,10 @@ def refresh_all(force=False):
                 return list(STATE["egress"].values())
         STATE["last_refresh_started"] = time.time()
         results = {}
+        listening_ports = get_listening_ports()
         max_workers = min(8, max(1, cfg["instances"]))
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(refresh_instance, idx, cfg): idx for idx in range(cfg["instances"])}
+            futures = {executor.submit(refresh_instance, idx, cfg, listening_ports=listening_ports): idx for idx in range(cfg["instances"])}
             for future in concurrent.futures.as_completed(futures):
                 idx = futures[future]
                 try:
@@ -933,10 +946,10 @@ def refresh_all(force=False):
                     proxy_port = cfg["proxy_base_port"] + idx if cfg["proxy_mode"] == "dedicated" else 1080
                     internal_port = 40000 + idx
                     p_running = instance_process_alive(idx)
-                    s_ready = port_open(internal_port)
-                    d_ready = port_open(proxy_port)
+                    s_ready = listener_present(internal_port, listening_ports=listening_ports)
+                    d_ready = listener_present(proxy_port, listening_ports=listening_ports)
                     results[idx + 1] = {
-                        "instance": idx + 1,
+                   "instance": idx + 1,
                         "proxy_port": proxy_port,
                         "internal_port": internal_port,
                     "egress_ip": cached_item.get("egress_ip"),
@@ -972,17 +985,26 @@ def get_instances():
     now = time.time()
     last = STATE.get("last_refresh_finished")
     if not last or (now - last > cfg["auto_refresh_interval"]):
-        threading.Thread(target=refresh_all, kwargs={"force": True}, daemon=True).start()
+        if REFRESH_LOCK.acquire(blocking=False):
+            REFRESH_LOCK.release()
+            threading.Thread(target=refresh_all, kwargs={"force": False}, daemon=True).start()
     cached = STATE["egress"]
     items = []
+    listening_ports = None
     for idx in range(cfg["instances"]):
         existing = cached.get(idx + 1, {})
         proxy_port = cfg["proxy_base_port"] + idx if cfg["proxy_mode"] == "dedicated" else 1080
         proxy_address = f"{proxy_host}:{proxy_port}" if proxy_host else ""
         internal_port = 40000 + idx
-        process_running = instance_process_alive(idx)
-        internal_socks_ready = port_open(internal_port)
-        dedicated_proxy_ready = port_open(proxy_port)
+        if existing:
+            process_running = existing.get("process_running", False)
+            internal_socks_ready = existing.get("internal_socks_ready", False)
+            dedicated_proxy_ready = existing.get("dedicated_proxy_ready", False)
+        else:
+            listening_ports = listening_ports or get_listening_ports()
+            process_running = instance_process_alive(idx)
+            internal_socks_ready = listener_present(internal_port, listening_ports=listening_ports)
+            dedicated_proxy_ready = listener_present(proxy_port, listening_ports=listening_ports)
         wd = get_watchdog_instance(idx)
 
         item = {
@@ -1109,8 +1131,9 @@ def get_instances():
 
 def healthy_verify_dir(cfg):
     tmp = Path(tempfile.mkdtemp(prefix="warp-verify-"))
+    listening_ports = get_listening_ports()
     for idx in range(cfg["instances"]):
-        if port_open(40000 + idx):
+        if listener_present(40000 + idx, listening_ports=listening_ports):
             (tmp / str(idx)).write_text("OK\n")
     return tmp
 
@@ -1158,7 +1181,7 @@ def reload_gost(cfg):
     deadline = time.time() + 20
     target_port = cfg["proxy_base_port"] if cfg["proxy_mode"] == "dedicated" else 1080
     while time.time() < deadline:
-        if not GOST_RESTART_FILE.exists() and port_open(target_port):
+        if not GOST_RESTART_FILE.exists() and listener_present(target_port):
             return
         time.sleep(0.5)
     if GOST_RESTART_FILE.exists():
@@ -1192,7 +1215,7 @@ def stop_instance(index):
 def wait_internal(index, timeout):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if port_open(40000 + index):
+        if listener_present(40000 + index):
             return True
         time.sleep(2)
     return False

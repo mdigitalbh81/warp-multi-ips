@@ -294,11 +294,11 @@ cleanup
             server.STATE["last_refresh_finished"] = time.time()
 
             orig_proc_alive = server.instance_process_alive
-            orig_port_open = server.port_open
+            orig_port_open = server.listener_present
             orig_wd = server.get_watchdog_instance
 
             server.instance_process_alive = lambda idx: True
-            server.port_open = lambda port, timeout=0.5: True
+            server.listener_present = lambda port, listening_ports=None: True
             server.get_watchdog_instance = lambda idx: {"status": "healthy", "current_egress": f"100.64.0.{idx+1}"}
 
             try:
@@ -315,7 +315,7 @@ cleanup
                 self.assertEqual(healthy_count, 20)
             finally:
                 server.instance_process_alive = orig_proc_alive
-                server.port_open = orig_port_open
+                server.listener_present = orig_port_open
                 server.get_watchdog_instance = orig_wd
         finally:
             os.environ.clear()
@@ -336,12 +336,12 @@ cleanup
             cfg = server.get_config(True)
 
             orig_proc_alive = server.instance_process_alive
-            orig_port_open = server.port_open
+            orig_port_open = server.listener_present
             orig_trace = server.trace_for_instance
             orig_wd = server.get_watchdog_instance
 
             server.instance_process_alive = lambda idx: True
-            server.port_open = lambda port, timeout=0.5: True
+            server.listener_present = lambda port, listening_ports=None: True
             server.get_watchdog_instance = lambda idx: {"status": "healthy", "current_egress": "198.51.100.5"}
             # Seed grace period: last confirmed warp=on was recent
             server._WARP_LAST_CONFIRMED[5] = time.time()
@@ -358,7 +358,7 @@ cleanup
                 self.assertIn("transient egress check warning", inst["error"])
             finally:
                 server.instance_process_alive = orig_proc_alive
-                server.port_open = orig_port_open
+                server.listener_present = orig_port_open
                 server.trace_for_instance = orig_trace
                 server.get_watchdog_instance = orig_wd
                 server._WARP_LAST_CONFIRMED.pop(5, None)
@@ -380,11 +380,11 @@ cleanup
             cfg = server.get_config(True)
 
             orig_proc_alive = server.instance_process_alive
-            orig_port_open = server.port_open
+            orig_port_open = server.listener_present
             orig_wd = server.get_watchdog_instance
 
             server.instance_process_alive = lambda idx: True
-            server.port_open = lambda port, timeout=0.5: False if port == 40005 else True
+            server.listener_present = lambda port, listening_ports=None: False if port == 40005 else True
             server.get_watchdog_instance = lambda idx: None
 
             try:
@@ -395,7 +395,7 @@ cleanup
                 self.assertEqual(inst["health"], "degraded")
             finally:
                 server.instance_process_alive = orig_proc_alive
-                server.port_open = orig_port_open
+                server.listener_present = orig_port_open
                 server.get_watchdog_instance = orig_wd
         finally:
             os.environ.clear()

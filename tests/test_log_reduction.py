@@ -15,99 +15,234 @@ import server
 import yaml
 
 
-class LogReductionAndSocksProbeTests(unittest.TestCase):
-
-    def test_socks5_probe_success_no_unexpected_eof(self):
-        ready = threading.Event()
-        server_received = []
-
-        def mock_socks_server(sock):
-            sock.bind(("127.0.0.1", 0))
-            sock.listen(1)
-            port = sock.getsockname()[1]
-            ready.set()
-            conn, _ = sock.accept()
-            data = conn.recv(1024)
-            server_received.append(data)
-            conn.sendall(b"\x05\x00")
-            conn.close()
-            sock.close()
-
+class LogReductionAndPassiveListenerTests(unittest.TestCase):
+    def test_1_listener_present_2080_detects_listen_without_accepting_connection(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        t = threading.Thread(target=mock_socks_server, args=(s,), daemon=True)
-        t.start()
-        ready.wait(timeout=2)
-        port = s.getsockname()[1]
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", 2080))
+        s.listen(1)
+        s.setblocking(False)
+        try:
+            self.assertTrue(server.listener_present(2080))
+            with self.assertRaises((BlockingIOError, OSError)):
+                s.accept()
+        finally:
+            s.close()
 
-        res = server.port_open(port, timeout=1.0)
-        t.join(timeout=2)
-
-        self.assertTrue(res)
-        self.assertEqual(len(server_received), 1)
-        self.assertEqual(server_received[0], b"\x05\x02\x00\x02")
-
-    def test_socks5_probe_rejects_non_socks_or_closed_port(self):
-        self.assertFalse(server.port_open(39999, timeout=0.1))
-
-        ready = threading.Event()
-
-        def mock_raw_server(sock):
-            sock.bind(("127.0.0.1", 0))
-            sock.listen(1)
-            ready.set()
-            conn, _ = sock.accept()
-            conn.sendall(b"HTTP/1.1 200 OK\r\n\r\n")
-            conn.close()
-            sock.close()
-
+    def test_2_listener_present_40000_detects_listen_without_socks_greeting(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        t = threading.Thread(target=mock_raw_server, args=(s,), daemon=True)
-        t.start()
-        ready.wait(timeout=2)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", 40000))
+        s.listen(1)
+        s.setblocking(False)
+        try:
+            self.assertTrue(server.listener_present(40000))
+            with self.assertRaises((BlockingIOError, OSError)):
+                s.accept()
+        finally:
+            s.close()
+
+    def test_3_closed_port_listener_present_false(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
+        s.close()
+        self.assertFalse(server.listener_present(port))
 
-        res = server.port_open(port, timeout=1.0)
-        t.join(timeout=2)
-        self.assertFalse(res)
+    def test_4_refresh_20_dedicated_instances_opens_zero_tcp_connections_to_gost(self):
+        sockets = []
+        try:
+            for i in range(20):
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("127.0.0.1", 2080 + i))
+                sock.listen(1)
+                sock.setblocking(False)
+                sockets.append(sock)
 
-    def _probe_mock_response(self, response_bytes=None, hang=False):
-        ready = threading.Event()
-
-        def mock_server(sock):
-            sock.bind(("127.0.0.1", 0))
-            sock.listen(1)
-            ready.set()
+            cfg = {
+                "instances": 20,
+                "proxy_mode": "dedicated",
+                "proxy_base_port": 2080,
+                "proxy_host_omniroute": "proxy.example.com",
+            }
+            orig_proc = server.instance_process_alive
+            orig_trace = server.trace_for_instance
+            server.instance_process_alive = lambda idx: True
+            server.trace_for_instance = lambda port, timeout=8: {"warp": "on", "ip": "100.64.0.1"}
             try:
-                conn, _ = sock.accept()
-                _ = conn.recv(1024)
-                if hang:
-                    time.sleep(0.3)
-                elif response_bytes is not None:
-                    conn.sendall(response_bytes)
-                conn.close()
-            except Exception:
-                pass
+                for idx in range(20):
+                    item = server.refresh_instance(idx, cfg)
+                    self.assertTrue(item["dedicated_proxy_ready"])
+                for sock in sockets:
+                    with self.assertRaises((BlockingIOError, OSError)):
+                        sock.accept()
             finally:
+                server.instance_process_alive = orig_proc
+                server.trace_for_instance = orig_trace
+        finally:
+            for sock in sockets:
                 sock.close()
 
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        t = threading.Thread(target=mock_server, args=(s,), daemon=True)
-        t.start()
-        ready.wait(timeout=2)
-        port = s.getsockname()[1]
-        res = server.port_open(port, timeout=0.1 if hang else 1.0)
-        t.join(timeout=2)
-        return res
+    def test_5_get_instances_opens_no_partial_socks_connection_to_gost(self):
+        sockets = []
+        try:
+            for i in range(20):
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("127.0.0.1", 2080 + i))
+                sock.listen(1)
+                sock.setblocking(False)
+                sockets.append(sock)
 
-    def test_socks5_probe_method_validation(self):
-        self.assertTrue(self._probe_mock_response(b"\x05\x00"))
-        self.assertTrue(self._probe_mock_response(b"\x05\x02"))
-        self.assertFalse(self._probe_mock_response(b"\x05\xff"))
-        self.assertFalse(self._probe_mock_response(b"\x05\x01"))
-        self.assertFalse(self._probe_mock_response(b"\x04\x00"))
-        self.assertFalse(self._probe_mock_response(b"\x05"))
-        self.assertFalse(self._probe_mock_response(b""))
-        self.assertFalse(self._probe_mock_response(hang=True))
+            orig_cfg = server.get_config
+            server.get_config = lambda reload=False: {
+                "instances": 20,
+                "proxy_mode": "dedicated",
+                "proxy_base_port": 2080,
+                "proxy_host_omniroute": "proxy.example.com",
+                "auto_refresh_interval": 60,
+            }
+            orig_proc = server.instance_process_alive
+            server.instance_process_alive = lambda idx: True
+            server.STATE["egress"] = {}
+            server.STATE["last_refresh_finished"] = time.time()
+            try:
+                instances = server.get_instances()
+                self.assertEqual(len(instances), 20)
+                for item in instances:
+                    self.assertTrue(item["dedicated_proxy_ready"])
+                for sock in sockets:
+                    with self.assertRaises((BlockingIOError, OSError)):
+                        sock.accept()
+            finally:
+                server.get_config = orig_cfg
+                server.instance_process_alive = orig_proc
+        finally:
+            for sock in sockets:
+                sock.close()
+
+    def test_6_internal_socks_ready_correct(self):
+        orig_lp = server.listener_present
+        orig_proc = server.instance_process_alive
+        orig_trace = server.trace_for_instance
+        try:
+            cfg = {"instances": 1, "proxy_mode": "dedicated", "proxy_base_port": 2080}
+            server.instance_process_alive = lambda idx: True
+            server.trace_for_instance = lambda port, timeout=8: {"warp": "on", "ip": "1.2.3.4"}
+
+            server.listener_present = lambda port, *a, **kw: port in (40000, 2080)
+            item = server.refresh_instance(0, cfg)
+            self.assertTrue(item["internal_socks_ready"])
+
+            server.listener_present = lambda port, *a, **kw: port == 2080
+            item = server.refresh_instance(0, cfg)
+            self.assertFalse(item["internal_socks_ready"])
+        finally:
+            server.listener_present = orig_lp
+            server.instance_process_alive = orig_proc
+            server.trace_for_instance = orig_trace
+
+    def test_7_dedicated_proxy_ready_correct(self):
+        orig_lp = server.listener_present
+        orig_proc = server.instance_process_alive
+        orig_trace = server.trace_for_instance
+        try:
+            cfg = {"instances": 1, "proxy_mode": "dedicated", "proxy_base_port": 2080}
+            server.instance_process_alive = lambda idx: True
+            server.trace_for_instance = lambda port, timeout=8: {"warp": "on", "ip": "1.2.3.4"}
+
+            server.listener_present = lambda port, *a, **kw: port in (40000, 2080)
+            item = server.refresh_instance(0, cfg)
+            self.assertTrue(item["dedicated_proxy_ready"])
+
+            server.listener_present = lambda port, *a, **kw: port == 40000
+            item = server.refresh_instance(0, cfg)
+            self.assertFalse(item["dedicated_proxy_ready"])
+        finally:
+            server.listener_present = orig_lp
+            server.instance_process_alive = orig_proc
+            server.trace_for_instance = orig_trace
+
+    def test_8_warp_connected_depends_on_real_trace_not_just_listener(self):
+        orig_lp = server.listener_present
+        orig_trace = server.trace_for_instance
+        orig_proc = server.instance_process_alive
+        orig_conf = server._WARP_LAST_CONFIRMED.copy()
+        try:
+            cfg = {"instances": 1, "proxy_mode": "dedicated", "proxy_base_port": 2080}
+            server.instance_process_alive = lambda idx: True
+            server.listener_present = lambda port, *a, **kw: True
+            server._WARP_LAST_CONFIRMED.pop(0, None)
+
+            # Real trace reports warp=off
+            server.trace_for_instance = lambda port, timeout=8: {"warp": "off", "ip": "1.2.3.4"}
+            item = server.refresh_instance(0, cfg)
+            self.assertTrue(item["internal_socks_ready"])
+            self.assertTrue(item["dedicated_proxy_ready"])
+            self.assertFalse(item["warp_connected"])
+            self.assertFalse(item["warp"])
+            self.assertNotEqual(item["health"], "healthy")
+
+            # Real trace times out without prior history
+            server.trace_for_instance = lambda port, timeout=8: (_ for _ in ()).throw(RuntimeError("timeout"))
+            item = server.refresh_instance(0, cfg)
+            self.assertFalse(item["warp_connected"])
+            self.assertNotEqual(item["health"], "healthy")
+        finally:
+            server.listener_present = orig_lp
+            server.trace_for_instance = orig_trace
+            server.instance_process_alive = orig_proc
+            server._WARP_LAST_CONFIRMED.clear()
+            server._WARP_LAST_CONFIRMED.update(orig_conf)
+
+    def test_9_health_all_true_is_healthy(self):
+        orig_lp = server.listener_present
+        orig_trace = server.trace_for_instance
+        orig_proc = server.instance_process_alive
+        orig_wd = server.get_watchdog_instance
+        try:
+            cfg = {"instances": 1, "proxy_mode": "dedicated", "proxy_base_port": 2080}
+            server.instance_process_alive = lambda idx: True
+            server.listener_present = lambda port, *a, **kw: True
+            server.trace_for_instance = lambda port, timeout=8: {"warp": "on", "ip": "100.64.0.1"}
+            server.get_watchdog_instance = lambda idx: {"status": "healthy"}
+
+            item = server.refresh_instance(0, cfg)
+            self.assertTrue(item["process_running"])
+            self.assertTrue(item["internal_socks_ready"])
+            self.assertTrue(item["dedicated_proxy_ready"])
+            self.assertTrue(item["warp_connected"])
+            self.assertEqual(item["health"], "healthy")
+        finally:
+            server.listener_present = orig_lp
+            server.trace_for_instance = orig_trace
+            server.instance_process_alive = orig_proc
+            server.get_watchdog_instance = orig_wd
+
+    def test_10_gost_listener_absent_is_degraded(self):
+        orig_lp = server.listener_present
+        orig_trace = server.trace_for_instance
+        orig_proc = server.instance_process_alive
+        orig_wd = server.get_watchdog_instance
+        try:
+            cfg = {"instances": 1, "proxy_mode": "dedicated", "proxy_base_port": 2080}
+            server.instance_process_alive = lambda idx: True
+            server.listener_present = lambda port, *a, **kw: port == 40000
+            server.trace_for_instance = lambda port, timeout=8: {"warp": "on", "ip": "100.64.0.1"}
+            server.get_watchdog_instance = lambda idx: {"status": "healthy"}
+
+            item = server.refresh_instance(0, cfg)
+            self.assertTrue(item["process_running"])
+            self.assertTrue(item["internal_socks_ready"])
+            self.assertFalse(item["dedicated_proxy_ready"])
+            self.assertTrue(item["warp_connected"])
+            self.assertEqual(item["health"], "degraded")
+        finally:
+            server.listener_present = orig_lp
+            server.trace_for_instance = orig_trace
+            server.instance_process_alive = orig_proc
+            server.get_watchdog_instance = orig_wd
 
     def test_filter_warp_logs_drops_stats_and_unexpected_eof(self):
         test_input = """2026-09-07T14:30:00 DEBUG warp-network-health-stats: rtt=15ms
@@ -191,6 +326,27 @@ INFO Socks greeting failed: unexpected EOF
         self.assertEqual(logging_cfg["options"]["max-size"], "20m")
         self.assertEqual(logging_cfg["options"]["max-file"], "5")
 
+
+    def test_listener_present_uses_no_sockets(self):
+        """Prove listener_present and get_listening_ports never touch socket.socket."""
+        import unittest.mock as mock
+        original_socket = socket.socket
+
+        def exploding_socket(*args, **kwargs):
+            raise AssertionError("socket.socket must not be called by listener_present")
+
+        with mock.patch.object(socket, 'socket', exploding_socket):
+            # Should work fine via /proc even with socket.socket blocked
+            result_2080 = server.listener_present(2080)
+            result_40000 = server.listener_present(40000)
+            # Also test with pre-computed listening_ports
+            lp = server.get_listening_ports()
+            result_batch = server.listener_present(2080, listening_ports=lp)
+
+        # Results depend on what's actually listening, but no AssertionError means success
+        self.assertIsInstance(result_2080, bool)
+        self.assertIsInstance(result_40000, bool)
+        self.assertIsInstance(result_batch, bool)
 
 if __name__ == "__main__":
     unittest.main()

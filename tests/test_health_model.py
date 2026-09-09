@@ -35,7 +35,7 @@ class HealthModelTests(unittest.TestCase):
         server.CONFIG_FILE = self.tmp / "cfg.json"
         # Save originals
         self._orig_proc = server.instance_process_alive
-        self._orig_port = server.port_open
+        self._orig_port = server.listener_present
         self._orig_trace = server.trace_for_instance
         self._orig_wd = server.get_watchdog_instance
         self._orig_confirmed = server._WARP_LAST_CONFIRMED.copy()
@@ -44,7 +44,7 @@ class HealthModelTests(unittest.TestCase):
 
     def tearDown(self):
         server.instance_process_alive = self._orig_proc
-        server.port_open = self._orig_port
+        server.listener_present = self._orig_port
         server.trace_for_instance = self._orig_trace
         server.get_watchdog_instance = self._orig_wd
         server._WARP_LAST_CONFIRMED.clear()
@@ -58,7 +58,7 @@ class HealthModelTests(unittest.TestCase):
     def _stub_all_up(self):
         """Stub process/port checks to return True."""
         server.instance_process_alive = lambda idx: True
-        server.port_open = lambda port, timeout=0.5: True
+        server.listener_present = lambda port, listening_ports=None: True
 
     # ------------------------------------------------------------------
     # Test 1: process=true, internal_socks=true, gost=true, trace warp=off
@@ -198,7 +198,7 @@ class HealthModelTests(unittest.TestCase):
         os.environ["PROXY_MODE"] = "round-robin"
         server.instance_process_alive = lambda idx: True
         # Internal SOCKS port (40000+idx) open, but external port 1080 is down
-        server.port_open = lambda port, timeout=0.5: port >= 40000
+        server.listener_present = lambda port, listening_ports=None: port >= 40000
         server.get_watchdog_instance = lambda idx: {"status": "healthy"}
         server.trace_for_instance = lambda port, timeout=8: {
             "warp": "on", "ip": f"100.64.0.{port - 40000 + 1}",
