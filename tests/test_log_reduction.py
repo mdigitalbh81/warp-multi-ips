@@ -289,7 +289,11 @@ panic: unexpected failure
         self.assertIn("panic: unexpected failure", out)
 
     def test_filter_warp_logs_socks_greeting_unexpected_eof_selective(self):
-        test_input = """WARN Socks greeting failed: UnexpectedEof
+        test_input = """WARN Socks greeting failed: unexpected EOF
+WARN Socks greeting failed: UnexpectedEof
+WARN Socks greeting failed: unexpected-eof
+WARN Socks greeting failed: unexpected_eof
+WARN Socks greeting failed: unexpectedXeof
 ERROR Socks greeting failed: authentication backend unavailable
 WARN Socks greeting failed: malformed authentication response
 INFO Socks greeting failed: unexpected EOF
@@ -298,10 +302,47 @@ INFO Socks greeting failed: unexpected EOF
         res = subprocess.run(["bash", "-c", cmd], env={**os.environ, "INPUT": test_input}, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0)
         out = res.stdout
+        self.assertNotIn("WARN Socks greeting failed: unexpected EOF", out)
         self.assertNotIn("WARN Socks greeting failed: UnexpectedEof", out)
+        self.assertIn("WARN Socks greeting failed: unexpected-eof", out)
+        self.assertIn("WARN Socks greeting failed: unexpected_eof", out)
+        self.assertIn("WARN Socks greeting failed: unexpectedXeof", out)
         self.assertIn("ERROR Socks greeting failed: authentication backend unavailable", out)
         self.assertIn("WARN Socks greeting failed: malformed authentication response", out)
         self.assertNotIn("INFO Socks greeting failed: unexpected EOF", out)
+
+    def test_filter_warp_logs_ansi_normalization_cases(self):
+        esc = chr(27)
+        plain_debug = "2026-09-07T14:30:00 DEBUG watchdog: tick periodic\n"
+        ansi_debug = f"{esc}[2m2026-09-09T05:37:24.112Z{esc}[0m {esc}[34mDEBUG{esc}[0m {esc}[1mupload_stats{esc}[0m: Starting upload stats\n"
+        ansi_trace = f"{esc}[2m2026-09-09T05:37:24.112Z{esc}[0m {esc}[35mTRACE{esc}[0m actor_connectivity: trace handshake step\n"
+        ansi_warn = f"{esc}[2m2026-09-09T05:37:24.112Z{esc}[0m {esc}[33m WARN{esc}[0m DNS probe slow\n"
+        ansi_error = f"{esc}[2m2026-09-09T05:37:24.112Z{esc}[0m {esc}[31mERROR{esc}[0m Registration token expired\n"
+        ansi_quic_debug = f"{esc}[2m2026-09-09T05:37:24.112Z{esc}[0m {esc}[34mDEBUG{esc}[0m {esc}[2mwarp_edge::h3_tun{esc}[0m: Reporting QUIC Stats: sent=500 recv=1000\n"
+        ansi_benign_socks = f"{esc}[33m WARN{esc}[0m run: proxy: Socks greeting failed: error=Transient(Custom {{ kind: UnexpectedEof, error: \"failed to fill whole buffer\" }})\n"
+        ansi_real_socks_err = f"{esc}[31mERROR{esc}[0m Socks greeting failed: authentication backend unavailable\n"
+
+        warn_input = plain_debug + ansi_debug + ansi_trace + ansi_warn + ansi_error + ansi_quic_debug + ansi_benign_socks + ansi_real_socks_err
+        cmd_warn = f". '{ROOT_DIR}/warp-common.sh'; printf '%s' \"$INPUT\" | WARP_LOG_LEVEL=warn filter_warp_logs"
+        res_warn = subprocess.run(["bash", "-c", cmd_warn], env={**os.environ, "INPUT": warn_input}, capture_output=True, text=True)
+        self.assertEqual(res_warn.returncode, 0)
+        out_warn = res_warn.stdout
+        self.assertNotIn("watchdog: tick periodic", out_warn)
+        self.assertNotIn("upload_stats", out_warn)
+        self.assertNotIn("actor_connectivity", out_warn)
+        self.assertIn(ansi_warn.strip(), out_warn)
+        self.assertIn(ansi_error.strip(), out_warn)
+        self.assertNotIn("Reporting QUIC Stats", out_warn)
+        self.assertNotIn("UnexpectedEof", out_warn)
+        self.assertIn(ansi_real_socks_err.strip(), out_warn)
+
+        error_input = ansi_warn + ansi_error
+        cmd_error = f". '{ROOT_DIR}/warp-common.sh'; printf '%s' \"$INPUT\" | WARP_LOG_LEVEL=error filter_warp_logs"
+        res_error = subprocess.run(["bash", "-c", cmd_error], env={**os.environ, "INPUT": error_input}, capture_output=True, text=True)
+        self.assertEqual(res_error.returncode, 0)
+        out_error = res_error.stdout
+        self.assertNotIn("DNS probe slow", out_error)
+        self.assertIn(ansi_error.strip(), out_error)
 
     def test_gost_config_contains_log_level_warn(self):
         with tempfile.TemporaryDirectory() as td:

@@ -27,10 +27,15 @@ filter_warp_logs() {
     awk -v lvl="$level" '
     {
         line = $0
-        low = tolower(line)
+		clean = line
+		gsub(/\033\[[0-9;?]*[ -/]*[@-~]/, "", clean)
+		gsub(/\033\][^\007\033]*(\007|\033\\)/, "", clean)
+		gsub(/\033[()][A-Za-z0-9]/, "", clean)
+		gsub(/\r/, "", clean)
+		low = tolower(clean)
         if (low ~ /socks greeting failed/ && (low ~ /unexpected ?eof/ || low ~ /unexpectedeof/)) { next }
-        is_err = (line ~ /(^|[[:space:]\[])(ERROR|FATAL)([[:space:]\]:]|$)/ || line ~ /level=(error|fatal)/ || low ~ /(^|[[:space:]])panic(:|[[:space:]]|$)/)
-		is_warn = (line ~ /(^|[[:space:]\[])WARN([[:space:]\]:]|$)/ || line ~ /level=warn/)
+        is_err = (clean ~ /(^|[[:space:]\[])(ERROR|FATAL)([[:space:]\]:]|$)/ || clean ~ /level=(error|fatal)/ || low ~ /(^|[[:space:]])panic(:|[[:space:]]|$)/)
+		is_warn = (clean ~ /(^|[[:space:]\[])WARN([[:space:]\]:]|$)/ || clean ~ /level=warn/)
 		if (lvl == "error") {
 			if (is_err) { print line; fflush() }
 			next
@@ -40,8 +45,8 @@ filter_warp_logs() {
 			next
 		}
 		if (low ~ /(masquetunnelstatsupdated|warp-network-health-stats|tunnel_stats_reporting_task|warp-connection-stats)/) { next }
-		if (line ~ /(^|[[:space:]\[])(DEBUG|TRACE)([[:space:]\]:]|$)/) { next }
-		if (line ~ /(^|[[:space:]\[])INFO([[:space:]\]:]|$)/) {
+		if (clean ~ /(^|[[:space:]\[])(DEBUG|TRACE)([[:space:]\]:]|$)/) { next }
+		if (clean ~ /(^|[[:space:]\[])INFO([[:space:]\]:]|$)/) {
 			if (low ~ /(connect|reconnect|disconnect|register|login|auth|fail|lost|loss|restart|shutdown)/) { print line; fflush() }
 			next
 		}
