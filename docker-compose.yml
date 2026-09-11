@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
 
     restart: unless-stopped
+
     logging:
       driver: "json-file"
       options:
@@ -42,7 +43,7 @@ services:
 
     networks:
       default:
-      easypanel:
+      shared:
         aliases:
           - omniroute_warp-proxy
           - omniroute_warp-proxy_undefined
@@ -51,5 +52,6 @@ volumes:
   warp-data:
 
 networks:
-  easypanel:
+  shared:
     external: true
+    name: "${SHARED_NETWORK:-easypanel}"
