@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
 
     restart: unless-stopped
+
     logging:
       driver: "json-file"
       options:
@@ -19,9 +20,11 @@ services:
 
     ports:
       - "2080-2124:2080-2124"
+      - "9090:9090"
 
     environment:
       WARP_INSTANCES: "${WARP_INSTANCES:-20}"
+
       PROXY_MODE: "dedicated"
       PROXY_BASE_PORT: "2080"
 
@@ -35,14 +38,14 @@ services:
       ADMIN_USER: "${ADMIN_USER}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
 
-      PROXY_HOST_OMNIROUTE: "${PROXY_HOST_OMNIROUTE}"
+      PROXY_HOST_OMNIROUTE: "${PROXY_HOST_OMNIROUTE:-omniroute_warp-proxy}"
 
     volumes:
       - warp-data:/var/lib/cloudflare-warp
 
     networks:
       default:
-      easypanel:
+      dokploy-network:
         aliases:
           - omniroute_warp-proxy
           - omniroute_warp-proxy_undefined
@@ -51,5 +54,6 @@ volumes:
   warp-data:
 
 networks:
-  easypanel:
+  dokploy-network:
     external: true
+    name: dokploy-network
