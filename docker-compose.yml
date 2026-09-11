@@ -20,6 +20,7 @@ services:
 
     ports:
       - "2080-2124:2080-2124"
+      - "9090:9090"
 
     environment:
       WARP_INSTANCES: "${WARP_INSTANCES:-20}"
