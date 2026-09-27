@@ -27,3 +27,4 @@ lightweight/
 *.toml
 *.conf
 egress.json
+knowledge/

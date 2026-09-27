@@ -27,9 +27,9 @@ CONNECT_TIMEOUT=${4:-30}
 if [ "${WARP_ENGINE:-official}" = "wireproxy" ]; then
     SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
     if [ -f "/start-wireproxy-instance.sh" ]; then
-        exec /start-wireproxy-instance.sh "$INSTANCE" "$PORT" "$CONNECT_TIMEOUT"
+        exec /start-wireproxy-instance.sh "$INSTANCE" "$PORT" "$LICENSE_KEYS_CSV" "$CONNECT_TIMEOUT"
     elif [ -f "${SCRIPT_DIR}/start-wireproxy-instance.sh" ]; then
-        exec "${SCRIPT_DIR}/start-wireproxy-instance.sh" "$INSTANCE" "$PORT" "$CONNECT_TIMEOUT"
+        exec "${SCRIPT_DIR}/start-wireproxy-instance.sh" "$INSTANCE" "$PORT" "$LICENSE_KEYS_CSV" "$CONNECT_TIMEOUT"
     fi
 fi
 

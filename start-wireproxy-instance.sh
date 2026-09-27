@@ -48,7 +48,7 @@ if [ ! -f "$ACCOUNT_FILE" ] || [ ! -f "$PROFILE_FILE" ]; then
     cd "$DATA_DIR"
     
     REG_OK=false
-    MAX_REG_ATTEMPTS=5
+    MAX_REG_ATTEMPTS=10
     for attempt in $(seq 1 $MAX_REG_ATTEMPTS); do
         echo "[Instance ${INSTANCE}] Registration attempt ${attempt}/${MAX_REG_ATTEMPTS}..."
         # Run wgcf register without exposing secrets to console
@@ -56,7 +56,10 @@ if [ ! -f "$ACCOUNT_FILE" ] || [ ! -f "$PROFILE_FILE" ]; then
             REG_OK=true
             break
         fi
-        BACKOFF=$(( 3 * attempt + (RANDOM % 3) ))
+        BACKOFF=$(( (1 << attempt) + (RANDOM % (1 << attempt)) ))
+        if [ $BACKOFF -gt 60 ]; then
+            BACKOFF=60
+        fi
         echo "[Instance ${INSTANCE}] Registration attempt failed, retrying in ${BACKOFF}s..."
         sleep $BACKOFF
     done

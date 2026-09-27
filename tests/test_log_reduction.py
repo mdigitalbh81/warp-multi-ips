@@ -16,29 +16,46 @@ import yaml
 
 
 class LogReductionAndPassiveListenerTests(unittest.TestCase):
+    def _find_free_port_block(self, count):
+        base = 29200
+        while base < 60000:
+            socks = []
+            try:
+                for i in range(count):
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    s.bind(("127.0.0.1", base + i))
+                    socks.append(s)
+                return base, socks
+            except OSError:
+                for s in socks:
+                    s.close()
+                base += count + 10
+        raise RuntimeError("No free port block")
+
     def test_1_listener_present_2080_detects_listen_without_accepting_connection(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("127.0.0.1", 2080))
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
         s.listen(1)
         s.setblocking(False)
         try:
-            self.assertTrue(server.listener_present(2080))
-            with self.assertRaises((BlockingIOError, OSError)):
-                s.accept()
+            self.assertTrue(server.listener_present(port))
+            self.assertRaises((BlockingIOError, OSError), s.accept)
         finally:
             s.close()
 
     def test_2_listener_present_40000_detects_listen_without_socks_greeting(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("127.0.0.1", 40000))
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
         s.listen(1)
         s.setblocking(False)
         try:
-            self.assertTrue(server.listener_present(40000))
-            with self.assertRaises((BlockingIOError, OSError)):
-                s.accept()
+            self.assertTrue(server.listener_present(port))
+            self.assertRaises((BlockingIOError, OSError), s.accept)
         finally:
             s.close()
 
@@ -50,20 +67,16 @@ class LogReductionAndPassiveListenerTests(unittest.TestCase):
         self.assertFalse(server.listener_present(port))
 
     def test_4_refresh_20_dedicated_instances_opens_zero_tcp_connections_to_gost(self):
-        sockets = []
+        base_port, sockets = self._find_free_port_block(20)
         try:
-            for i in range(20):
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                sock.bind(("127.0.0.1", 2080 + i))
+            for sock in sockets:
                 sock.listen(1)
                 sock.setblocking(False)
-                sockets.append(sock)
 
             cfg = {
                 "instances": 20,
                 "proxy_mode": "dedicated",
-                "proxy_base_port": 2080,
+                "proxy_base_port": base_port,
                 "proxy_host_omniroute": "proxy.example.com",
             }
             orig_proc = server.instance_process_alive
@@ -75,8 +88,7 @@ class LogReductionAndPassiveListenerTests(unittest.TestCase):
                     item = server.refresh_instance(idx, cfg)
                     self.assertTrue(item["dedicated_proxy_ready"])
                 for sock in sockets:
-                    with self.assertRaises((BlockingIOError, OSError)):
-                        sock.accept()
+                    self.assertRaises((BlockingIOError, OSError), sock.accept)
             finally:
                 server.instance_process_alive = orig_proc
                 server.trace_for_instance = orig_trace
@@ -85,21 +97,17 @@ class LogReductionAndPassiveListenerTests(unittest.TestCase):
                 sock.close()
 
     def test_5_get_instances_opens_no_partial_socks_connection_to_gost(self):
-        sockets = []
+        base_port, sockets = self._find_free_port_block(20)
         try:
-            for i in range(20):
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                sock.bind(("127.0.0.1", 2080 + i))
+            for sock in sockets:
                 sock.listen(1)
                 sock.setblocking(False)
-                sockets.append(sock)
 
             orig_cfg = server.get_config
             server.get_config = lambda reload=False: {
                 "instances": 20,
                 "proxy_mode": "dedicated",
-                "proxy_base_port": 2080,
+                "proxy_base_port": base_port,
                 "proxy_host_omniroute": "proxy.example.com",
                 "auto_refresh_interval": 60,
             }
@@ -113,8 +121,7 @@ class LogReductionAndPassiveListenerTests(unittest.TestCase):
                 for item in instances:
                     self.assertTrue(item["dedicated_proxy_ready"])
                 for sock in sockets:
-                    with self.assertRaises((BlockingIOError, OSError)):
-                        sock.accept()
+                    self.assertRaises((BlockingIOError, OSError), sock.accept)
             finally:
                 server.get_config = orig_cfg
                 server.instance_process_alive = orig_proc

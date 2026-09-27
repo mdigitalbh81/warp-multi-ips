@@ -25,33 +25,62 @@ COPY admin /admin
 COPY ./healthcheck /healthcheck
 
 RUN if [ -n "${TARGETPLATFORM}" ]; then \
-      case ${TARGETPLATFORM} in \
-        "linux/amd64") ARCH="amd64" ;; \
-        "linux/arm64") ARCH="arm64" ;; \
-        *) echo "Unsupported TARGETPLATFORM: ${TARGETPLATFORM}" && exit 1 ;; \
-      esac; \
+        case ${TARGETPLATFORM} in \
+            "linux/amd64") ARCH="amd64" ;; \
+            "linux/arm64") ARCH="arm64" ;; \
+            *) echo "Unsupported TARGETPLATFORM: ${TARGETPLATFORM}" && exit 1 ;; \
+        esac; \
     else \
-      case "$(dpkg --print-architecture)" in \
-        "amd64") ARCH="amd64" ;; \
-        "arm64") ARCH="arm64" ;; \
-        *) echo "Unsupported local architecture: $(dpkg --print-architecture)" && exit 1 ;; \
-      esac; \
-    fi && \
+        case "$(dpkg --print-architecture)" in \
+            "amd64") ARCH="amd64" ;; \
+            "arm64") ARCH="arm64" ;; \
+            *) echo "Unsupported local architecture: $(dpkg --print-architecture)" && exit 1 ;; \
+        esac; \
+    fi; \
     apt-get update && \
     apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release sudo jq dbus python3 && \
-    curl https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release sudo dbus python3 jq jq jq && \
+    curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
     echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends cloudflare-warp && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
-    GOST_VERSION=$(curl -s https://api.github.com/repos/go-gost/gost/releases/latest | jq -r '.tag_name' | sed 's/^v//') && \
+    GOST_VERSION=$(curl -s "https://api.github.com/repos/go-gost/gost/releases/latest" | jq -r '.tag_name' | sed 's/^v//') && \
     echo "Installing GOST version: ${GOST_VERSION}" && \
     FILE_NAME="gost_${GOST_VERSION}_linux_${ARCH}.tar.gz" && \
     curl -fLO "https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/${FILE_NAME}" && \
-    tar -xzf ${FILE_NAME} -C /usr/bin/ gost && \
-    rm -f ${FILE_NAME}     && chmod +x /usr/bin/gost     && WGCF_VERSION="2.2.32"     && if [ "" = "amd64" ]; then         WGCF_SHA256="2ff97f2201972ce582a424455d50a3719a380eef0cd1f3144f7779348e122a2c"         && WIREPROXY_SHA256="e88c1d090740373fc606c1bafd81d9a5eadc642cce5667616e20e9d7a444f51c";     elif [ "" = "arm64" ]; then         WGCF_SHA256="21fe21d9f61db9b381d71200f6f59c7949e0bb455446edcb33dda6ad6a8fcf8f"         && WIREPROXY_SHA256="370e00bd2167960d1ecd1c3c1439715bbaa94a0a110a2040468670c9af6021b6";     fi     && curl -fsSL -o /usr/bin/wgcf "https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VERSION}/wgcf_${WGCF_VERSION}_linux_${ARCH}"     && echo "${WGCF_SHA256}  /usr/bin/wgcf" | sha256sum -c -     && chmod +x /usr/bin/wgcf     && WIREPROXY_VERSION="1.1.3"     && curl -fsSL -o /tmp/wireproxy.tar.gz "https://github.com/pufferffish/wireproxy/releases/download/v${WIREPROXY_VERSION}/wireproxy_linux_${ARCH}.tar.gz"     && echo "${WIREPROXY_SHA256}  /tmp/wireproxy.tar.gz" | sha256sum -c -     && tar -xzf /tmp/wireproxy.tar.gz -C /usr/bin/ wireproxy     && rm -f /tmp/wireproxy.tar.gz     && chmod +x /usr/bin/wireproxy     && chmod +x /entrypoint.sh     && chmod +x /start-warp-instance.sh     && chmod +x /start-wireproxy-instance.sh     && chmod +x /warp-common.sh     && chmod +x /watchdog.sh     && chmod +x /admin/server.py     && chmod +x /healthcheck/index.sh     && useradd -s /bin/bash warp     && echo "warp ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/warp
+    tar -xzf "${FILE_NAME}" -C /usr/bin/ gost && \
+    rm -f "${FILE_NAME}" && \
+    chmod +x /usr/bin/gost && \
+    WGCF_VERSION="2.2.32" && \
+    if [ "$ARCH" = "amd64" ]; then \
+        WGCF_SHA256="2ff97f2201972ce582a424455d50a3719a380eef0cd1f3144f7779348e122a2c"; \
+        WIREPROXY_SHA256="e88c1d090740373fc606c1bafd81d9a5eadc642cce5667616e20e9d7a444f51c"; \
+    elif [ "$ARCH" = "arm64" ]; then \
+        WGCF_SHA256="21fe21d9f61db9b381d71200f6f59c7949e0bb455446edcb33dda6ad6a8fcf8f"; \
+        WIREPROXY_SHA256="370e00bd2167960d1ecd1c3c1439715bbaa94a0a110a2040468670c9af6021b6"; \
+    else \
+        echo "Unsupported ARCH: ${ARCH}" >&2 && exit 1; \
+    fi && \
+    curl -fsSL -o /usr/bin/wgcf "https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VERSION}/wgcf_${WGCF_VERSION}_linux_${ARCH}" && \
+    echo "${WGCF_SHA256}  /usr/bin/wgcf" | sha256sum -c - && \
+    chmod +x /usr/bin/wgcf && \
+    WIREPROXY_VERSION="1.1.3" && \
+    curl -fsSL -o /tmp/wireproxy.tar.gz "https://github.com/pufferffish/wireproxy/releases/download/v${WIREPROXY_VERSION}/wireproxy_linux_${ARCH}.tar.gz" && \
+    echo "${WIREPROXY_SHA256}  /tmp/wireproxy.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/wireproxy.tar.gz -C /usr/bin/ wireproxy && \
+    rm -f /tmp/wireproxy.tar.gz && \
+    chmod +x /usr/bin/wireproxy && \
+    chmod +x /entrypoint.sh && \
+    chmod +x /start-warp-instance.sh && \
+    chmod +x /start-wireproxy-instance.sh && \
+    chmod +x /warp-common.sh && \
+    chmod +x /watchdog.sh && \
+    chmod +x /admin/server.py && \
+    chmod +x /healthcheck/index.sh && \
+    useradd -m -s /bin/bash warp && \
+    echo "warp ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/warp
 
 USER warp
 
