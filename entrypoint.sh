@@ -130,7 +130,7 @@ for i in $(seq 0 $((WARP_INSTANCES - 1))); do
             REG_WAIT=$((REG_WAIT + 2))
         done
         if [ "$i" -lt $((WARP_INSTANCES - 1)) ]; then
-            sleep "${LIGHTWEIGHT_REGISTRATION_DELAY:-2}"
+            sleep "${LIGHTWEIGHT_REGISTRATION_DELAY:-15}"
         fi
     else
         sleep 0.5
