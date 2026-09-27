@@ -213,7 +213,7 @@ function renderSummary() {
   const status = state.status;
   if (!cfg && !status) return;
 
-  const engine = status?.engine || cfg?.warp_engine || "official";
+  const engine = status?.engine || cfg?.warp_engine || "wireproxy";
   const configured = status?.configured_instances ?? cfg?.instances ?? "-";
   const healthy = status ? `${status.healthy_instances ?? 0}/${status.configured_instances ?? 0}` : "-";
   const unique = status ? `${status.unique_egresses ?? 0}/${status.configured_instances ?? 0}` : "-";
@@ -283,7 +283,7 @@ function buildInstanceRow(item) {
   const port = item.proxy_port === undefined || item.proxy_port === null ? "" : String(item.proxy_port);
   const health = item.health || "unknown";
   const warpLabel = item.warp ? "ON" : "OFF";
-  const engine = item.engine || (state.config && state.config.warp_engine) || "official";
+  const engine = item.engine || (state.config && state.config.warp_engine) || "wireproxy";
   const colSpan = 12;
 
   // 1. Instance
@@ -519,7 +519,7 @@ function buildMobileCard(item) {
   const port = item.proxy_port === undefined || item.proxy_port === null ? "" : String(item.proxy_port);
   const health = item.health || "unknown";
   const warpLabel = item.warp ? "ON" : "OFF";
-  const engine = item.engine || (state.config && state.config.warp_engine) || "official";
+  const engine = item.engine || (state.config && state.config.warp_engine) || "wireproxy";
   const wd = item.watchdog || {};
 
   const card = document.createElement("div");
@@ -762,7 +762,7 @@ function populateSettings() {
 
   const form = els.settingsForm;
   form.proxy_mode.value = cfg.proxy_mode;
-  if (form.warp_engine) form.warp_engine.value = cfg.warp_engine || "official";
+  if (form.warp_engine) form.warp_engine.value = cfg.warp_engine || "wireproxy";
   if (form.lightweight_egress_family) form.lightweight_egress_family.value = cfg.lightweight_egress_family || "ipv6";
   if (form.lightweight_require_unique_egress) form.lightweight_require_unique_egress.checked = cfg.lightweight_require_unique_egress !== false;
   if (cfg.max_instances) form.instances.max = String(cfg.max_instances);
@@ -1002,7 +1002,7 @@ els.settingsForm.addEventListener("submit", async (event) => {
   const form = els.settingsForm;
   const payload = {
     proxy_mode: form.proxy_mode.value,
-    warp_engine: form.warp_engine ? form.warp_engine.value : "official",
+    warp_engine: form.warp_engine ? form.warp_engine.value : "wireproxy",
     lightweight_egress_family: form.lightweight_egress_family ? form.lightweight_egress_family.value : "ipv6",
     lightweight_require_unique_egress: form.lightweight_require_unique_egress ? form.lightweight_require_unique_egress.checked : true,
     instances: Number(form.instances.value),
