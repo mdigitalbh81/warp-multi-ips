@@ -9,7 +9,7 @@ HEALTHY_PORTS_FILE=${HEALTHY_PORTS_FILE:-/tmp/healthy-warp-ports}
 WARP_ENV_FILE=${WARP_ENV_FILE:-/tmp/warp-admin-env}
 MAX_WARP_INSTANCES=${MAX_WARP_INSTANCES:-45}
 export MAX_WARP_INSTANCES
-WARP_ENGINE=${WARP_ENGINE:-official}
+WARP_ENGINE=${WARP_ENGINE:-wireproxy}
 export WARP_ENGINE
 LIGHTWEIGHT_EGRESS_FAMILY=${LIGHTWEIGHT_EGRESS_FAMILY:-ipv6}
 export LIGHTWEIGHT_EGRESS_FAMILY
@@ -278,7 +278,7 @@ load_admin_config(){
 			WARP_ENGINE="$persisted_engine"
 			ENV_WARP_ENGINE_SET=""
 		else
-			WARP_ENGINE="${WARP_ENGINE:-official}"
+			WARP_ENGINE="${WARP_ENGINE:-wireproxy}"
 			ENV_WARP_ENGINE_SET=""
 		fi
 		export ENV_WARP_ENGINE_SET
@@ -364,7 +364,7 @@ load_admin_config(){
 		WARP_ENGINE="$env_engine_val"
 		ENV_WARP_ENGINE_SET="true"
 	else
-		WARP_ENGINE="${WARP_ENGINE:-official}"
+		WARP_ENGINE="${WARP_ENGINE:-wireproxy}"
 		ENV_WARP_ENGINE_SET=""
 	fi
 	export ENV_WARP_ENGINE_SET
@@ -421,7 +421,7 @@ init_admin_config() {
 		--arg proxy_user "${PROXY_USER:-}" \
 		--arg proxy_password "${PROXY_PASS:-}" \
 		--arg proxy_host_omniroute "${PROXY_HOST_OMNIROUTE:-${PROXY_HOST:-}}" \
-		--arg warp_engine "${WARP_ENGINE:-official}" \
+		--arg warp_engine "${WARP_ENGINE:-wireproxy}" \
 		--arg lightweight_egress_family "${LIGHTWEIGHT_EGRESS_FAMILY:-ipv6}" \
 		--argjson lightweight_require_unique_egress "${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-true}" \
 		'{
@@ -444,7 +444,7 @@ init_admin_config() {
 }
 
 validate_runtime_config() {
-	if [ "${WARP_ENGINE:-official}" != "official" ] && [ "${WARP_ENGINE:-official}" != "wireproxy" ]; then
+	if [ "${WARP_ENGINE:-wireproxy}" != "official" ] && [ "${WARP_ENGINE:-wireproxy}" != "wireproxy" ]; then
 		echo "Error: WARP_ENGINE must be 'official' or 'wireproxy' (got: '${WARP_ENGINE}')"
 		exit 1
 	fi
@@ -533,7 +533,7 @@ write_admin_env_file() {
         printf 'ENV_PROXY_HOST_OMNIROUTE_SET=%s
 ' "${ENV_PROXY_HOST_OMNIROUTE_SET:-false}"
         printf 'WARP_ENGINE=%s
-' "${WARP_ENGINE:-official}"
+' "${WARP_ENGINE:-wireproxy}"
         printf 'ENV_WARP_ENGINE_SET=%s
 ' "${ENV_WARP_ENGINE_SET:-false}"
         printf 'LIGHTWEIGHT_EGRESS_FAMILY=%s
