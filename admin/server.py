@@ -743,7 +743,7 @@ def base_config():
         "proxy_auth_enabled": parse_bool(env.get("PROXY_AUTH_ENABLED", "false")),
         "proxy_user": env.get("PROXY_USER", ""),
         "proxy_password": os.environ.get("PROXY_PASS", "") if parse_bool(env.get("PROXY_AUTH_ENABLED", "false")) else "",
-        "warp_engine": env.get("WARP_ENGINE") or os.environ.get("WARP_ENGINE", "official"),
+        "warp_engine": env.get("WARP_ENGINE") or os.environ.get("WARP_ENGINE", "wireproxy"),
         "lightweight_egress_family": env.get("LIGHTWEIGHT_EGRESS_FAMILY") or os.environ.get("LIGHTWEIGHT_EGRESS_FAMILY", "ipv6"),
         "lightweight_require_unique_egress": parse_bool(env.get("LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS", os.environ.get("LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS", "true"))),
     }
@@ -762,7 +762,7 @@ def get_config(include_secret=False):
         "auto_refresh_interval": resolve_config_field(env, stored, "AUTO_REFRESH_INTERVAL", "auto_refresh_interval", 60, int, min_val=1),
         "proxy_auth_enabled": bool(stored.get("proxy_auth_enabled", parse_bool(env.get("PROXY_AUTH_ENABLED")))),
         "proxy_user": stored.get("proxy_user", env.get("PROXY_USER", "")),
-        "warp_engine": resolve_config_field(env, stored, "WARP_ENGINE", "warp_engine", "official", str),
+        "warp_engine": resolve_config_field(env, stored, "WARP_ENGINE", "warp_engine", "wireproxy", str),
         "lightweight_egress_family": resolve_config_field(env, stored, "LIGHTWEIGHT_EGRESS_FAMILY", "lightweight_egress_family", "ipv6", str),
         "lightweight_require_unique_egress": resolve_config_field(env, stored, "LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS", "lightweight_require_unique_egress", True, parse_bool),
     }
@@ -787,9 +787,9 @@ def validate_config(cfg):
         errors.append(f"instances must be between 1 and {MAX_INSTANCES}")
     if mode not in ("round-robin", "dedicated"):
         errors.append("proxy_mode must be round-robin or dedicated")
-    engine = cfg.get("warp_engine", "official")
-    if engine not in ("official", "wireproxy"):
-        errors.append("warp_engine must be official or wireproxy")
+    engine = cfg.get("warp_engine", "wireproxy")
+    if engine != "wireproxy":
+        errors.append("only wireproxy engine is supported")
     family = cfg.get("lightweight_egress_family", "ipv6")
     if family not in ("ipv6", "ipv4", "auto"):
         errors.append("lightweight_egress_family must be ipv6, ipv4, or auto")
@@ -1046,7 +1046,7 @@ def trace_for_proxy(port, cfg, timeout=10):
 
 
 def refresh_instance(index, cfg, listening_ports=None):
-    warp_engine = cfg.get("warp_engine", "official")
+    warp_engine = cfg.get("warp_engine", "wireproxy")
     proxy_port = cfg["proxy_base_port"] + index if cfg["proxy_mode"] == "dedicated" else 1080
     proxy_host = cfg.get("proxy_host_omniroute") or ""
     proxy_address = f"{proxy_host}:{proxy_port}" if proxy_host else ""
@@ -1270,7 +1270,7 @@ def get_instances():
             "instance": idx + 1,
             "proxy_port": proxy_port,
             "internal_port": internal_port,
-            "engine": cfg.get("warp_engine", "official"),
+            "engine": cfg.get("warp_engine", "wireproxy"),
             "egress_ip": wd.get("current_egress") if wd else None,
             "ipv6_egress": (wd.get("ipv6_egress") if wd else None) or (read_egress_json(idx).get("current_ipv6")),
             "previous_ipv6_egress": (wd.get("previous_ipv6_egress") if wd else None) or (read_egress_json(idx).get("previous_ipv6")),
@@ -1459,7 +1459,7 @@ def reload_gost(cfg):
 
 def start_instance(index, cfg):
     env = os.environ.copy()
-    env["WARP_ENGINE"] = str(cfg.get("warp_engine", "official"))
+    env["WARP_ENGINE"] = str(cfg.get("warp_engine", "wireproxy"))
     env["LIGHTWEIGHT_EGRESS_FAMILY"] = str(cfg.get("lightweight_egress_family", "ipv6"))
     env["LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS"] = str(cfg.get("lightweight_require_unique_egress", True)).lower()
     start_script = Path("/start-warp-instance.sh")
@@ -1532,8 +1532,8 @@ def apply_config(new_cfg):
 
         old_instances = old_cfg["instances"]
         new_instances = new_cfg["instances"]
-        old_engine = old_cfg.get("warp_engine", "official")
-        new_engine = new_cfg.get("warp_engine", "official")
+        old_engine = old_cfg.get("warp_engine", "wireproxy")
+        new_engine = new_cfg.get("warp_engine", "wireproxy")
         engine_changed = old_engine != new_engine
 
         if engine_changed:
@@ -1837,7 +1837,7 @@ class Handler(SimpleHTTPRequestHandler):
                 op = read_json(Path("/tmp/operation-state.json"), None)
             self.send_json(
                 {
-                    "engine": cfg.get("warp_engine", "official"),
+                    "engine": cfg.get("warp_engine", "wireproxy"),
                     "configured_instances": cfg["instances"],
                     "healthy_instances": healthy,
                     "unique_egresses": unique_egresses,
