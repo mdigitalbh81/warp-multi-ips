@@ -46,11 +46,11 @@ RUN if [ -n "${TARGETPLATFORM}" ]; then \
     echo "Installing GOST version: ${GOST_VERSION}" && \
     if [ "$ARCH" = "amd64" ]; then \
         GOST_SHA256="676fb7f78d267b6ae73df719c0c7f2b565dde7147da935cfafbc1e1da558b6d5"; \
-        WGCF_SHA256="2ff97f2201972ce582a424455d50a3719a380eef0cd1f3144f7779348e122a2c"; \
+        WGCF_SHA256="01614e38c0eb5f3405232e71cfaf02d64d4809e4988ad8f5a8071af16d193405"; \
         WIREPROXY_SHA256="e88c1d090740373fc606c1bafd81d9a5eadc642cce5667616e20e9d7a444f51c"; \
     elif [ "$ARCH" = "arm64" ]; then \
         GOST_SHA256="d03699e3f385d4ff5dad68046712adfcc7515325a064d2ab046e0bece30f8f8f"; \
-        WGCF_SHA256="21fe21d9f61db9b381d71200f6f59c7949e0bb455446edcb33dda6ad6a8fcf8f"; \
+        WGCF_SHA256="dcadadc42bcc410a4032a6d1c0490ea510e199f0aaaee397dc1aa0fbd27038e8"; \
         WIREPROXY_SHA256="370e00bd2167960d1ecd1c3c1439715bbaa94a0a110a2040468670c9af6021b6"; \
     else \
         echo "Unsupported ARCH: ${ARCH}" >&2; exit 1; \
@@ -61,7 +61,7 @@ RUN if [ -n "${TARGETPLATFORM}" ]; then \
     tar -xzf "/tmp/${FILE_NAME}" -C /usr/bin/ gost && \
     rm -f "/tmp/${FILE_NAME}" && \
     chmod +x /usr/bin/gost && \
-    WGCF_VERSION="2.2.32" && \
+    WGCF_VERSION="2.3.0" && \
     curl -fsSL -o /usr/bin/wgcf "https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VERSION}/wgcf_${WGCF_VERSION}_linux_${ARCH}" && \
     echo "${WGCF_SHA256}  /usr/bin/wgcf" | sha256sum -c && \
     chmod +x /usr/bin/wgcf && \
