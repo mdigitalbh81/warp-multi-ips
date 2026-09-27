@@ -13,6 +13,7 @@ def load_server(tmpdir):
         "ADMIN_CREDENTIALS_FILE": str(tmpdir / "admin-credentials.json"),
         "WARP_ENV_FILE": str(tmpdir / "warp-env"),
         "WATCHDOG_STATE_FILE": str(tmpdir / "watchdog-state.json"),
+        "WARP_INSTANCES": "1",
     }
     old_env = os.environ.copy()
     os.environ.update(env)
