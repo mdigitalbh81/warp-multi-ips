@@ -111,10 +111,10 @@ class ShellStartupPrecedenceTests(unittest.TestCase):
         self.assertEqual(effective, "legacy-host")
         self.assertIn("PROXY_HOST_OMNIROUTE=legacy-host\n", env_text)
 
-    def test_all_empty_stays_empty(self):
+    def test_all_empty_uses_lightweight_default(self):
         effective, env_text = self.run_shell_flow(env_host=None, persisted_host="")
-        self.assertEqual(effective, "")
-        self.assertIn("PROXY_HOST_OMNIROUTE=\n", env_text)
+        self.assertEqual(effective, "omniroute_warp-proxy")
+        self.assertIn("PROXY_HOST_OMNIROUTE=omniroute_warp-proxy\n", env_text)
 
 
 if __name__ == "__main__":
