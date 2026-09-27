@@ -189,7 +189,7 @@ load_admin_config(){
             WARP_INSTANCES="$persisted_instances"
             ENV_WARP_INSTANCES_SET=""
         else
-    WARP_INSTANCES="${WARP_INSTANCES:-1}"
+    WARP_INSTANCES="${WARP_INSTANCES:-10}"
     ENV_WARP_INSTANCES_SET=""
   fi
   export ENV_WARP_INSTANCES_SET
@@ -202,7 +202,7 @@ load_admin_config(){
             PROXY_MODE="$persisted_mode"
             ENV_PROXY_MODE_SET=""
         else
-            PROXY_MODE="${PROXY_MODE:-round-robin}"
+            PROXY_MODE="${PROXY_MODE:-dedicated}"
             ENV_PROXY_MODE_SET=""
         fi
 
@@ -227,7 +227,7 @@ load_admin_config(){
             PROXY_HOST_OMNIROUTE="$PROXY_HOST"
             ENV_PROXY_HOST_OMNIROUTE_SET="true"
         else
-            PROXY_HOST_OMNIROUTE=""
+            PROXY_HOST_OMNIROUTE="omniroute_warp-proxy"
             ENV_PROXY_HOST_OMNIROUTE_SET=""
         fi
 
@@ -305,7 +305,7 @@ load_admin_config(){
             WARP_INSTANCES="$env_instances_val"
             ENV_WARP_INSTANCES_SET="true"
         else
-    WARP_INSTANCES="${WARP_INSTANCES:-1}"
+    WARP_INSTANCES="${WARP_INSTANCES:-10}"
     ENV_WARP_INSTANCES_SET=""
   fi
   export ENV_WARP_INSTANCES_SET
@@ -314,7 +314,7 @@ load_admin_config(){
   if [ -n "$env_mode_set" ] && [ -n "$env_mode_val" ]; then
             PROXY_MODE="$env_mode_val"
         else
-            PROXY_MODE="${PROXY_MODE:-round-robin}"
+            PROXY_MODE="${PROXY_MODE:-dedicated}"
         fi
 
         if [ -n "$env_port_set" ] && [ -n "$env_port_val" ]; then
@@ -367,7 +367,7 @@ load_admin_config(){
         elif [ -n "${PROXY_HOST:-}" ]; then
             PROXY_HOST_OMNIROUTE="$PROXY_HOST"
         else
-            PROXY_HOST_OMNIROUTE=""
+            PROXY_HOST_OMNIROUTE="omniroute_warp-proxy"
         fi
     fi
 }
@@ -383,8 +383,8 @@ init_admin_config() {
             auth_enabled=true
         fi
         jq -n \
-            --argjson instances "${WARP_INSTANCES:-1}" \
-            --arg proxy_mode "${PROXY_MODE:-round-robin}" \
+            --argjson instances "${WARP_INSTANCES:-10}" \
+            --arg proxy_mode "${PROXY_MODE:-dedicated}" \
             --argjson proxy_base_port "${PROXY_BASE_PORT:-2080}" \
             --argjson proxy_max_rps "${PROXY_MAX_RPS:-50}" \
             --argjson warp_connect_timeout "${WARP_CONNECT_TIMEOUT:-30}" \
@@ -392,7 +392,7 @@ init_admin_config() {
 		--argjson proxy_auth_enabled "$auth_enabled" \
 		--arg proxy_user "${PROXY_USER:-}" \
 		--arg proxy_password "${PROXY_PASS:-}" \
-		--arg proxy_host_omniroute "${PROXY_HOST_OMNIROUTE:-${PROXY_HOST:-}}" \
+		--arg proxy_host_omniroute "${PROXY_HOST_OMNIROUTE:-${PROXY_HOST:-omniroute_warp-proxy}}" \
 		--arg lightweight_egress_family "${LIGHTWEIGHT_EGRESS_FAMILY:-ipv6}" \
 		--argjson lightweight_require_unique_egress "${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-true}" \
 		'{
