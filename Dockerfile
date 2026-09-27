@@ -42,28 +42,31 @@ RUN if [ -n "${TARGETPLATFORM}" ]; then \
     apt-get install -y --no-install-recommends ca-certificates curl sudo python3 jq && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
-    GOST_VERSION=$(curl -s "https://api.github.com/repos/go-gost/gost/releases/latest" | grep -oP '"tag_name":\s*"\K[^"]+' | sed 's/^v//') && \
-    echo "Installing GOST version: $GOST_VERSION" && \
-    FILE_NAME="gost_${GOST_VERSION}_linux_${ARCH}.tar.gz" && \
-    curl -fLO "https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/${FILE_NAME}" && \
-    tar -xzf "${FILE_NAME}" -C /usr/bin/ gost && \
-    rm -f "${FILE_NAME}" && \
-    chmod +x /usr/bin/gost && \
-    WGCF_VERSION="2.2.32" && \
+    GOST_VERSION="3.3.0" && \
+    echo "Installing GOST version: ${GOST_VERSION}" && \
     if [ "$ARCH" = "amd64" ]; then \
+        GOST_SHA256="676fb7f78d267b6ae73df719c0c7f2b565dde7147da935cfafbc1e1da558b6d5"; \
         WGCF_SHA256="2ff97f2201972ce582a424455d50a3719a380eef0cd1f3144f7779348e122a2c"; \
         WIREPROXY_SHA256="e88c1d090740373fc606c1bafd81d9a5eadc642cce5667616e20e9d7a444f51c"; \
     elif [ "$ARCH" = "arm64" ]; then \
+        GOST_SHA256="d03699e3f385d4ff5dad68046712adfcc7515325a064d2ab046e0bece30f8f8f"; \
         WGCF_SHA256="21fe21d9f61db9b381d71200f6f59c7949e0bb455446edcb33dda6ad6a8fcf8f"; \
         WIREPROXY_SHA256="370e00bd2167960d1ecd1c3c1439715bbaa94a0a110a2040468670c9af6021b6"; \
     else \
         echo "Unsupported ARCH: ${ARCH}" >&2; exit 1; \
     fi && \
+    FILE_NAME="gost_${GOST_VERSION}_linux_${ARCH}.tar.gz" && \
+    curl -fsSL -o "/tmp/${FILE_NAME}" "https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/${FILE_NAME}" && \
+    echo "${GOST_SHA256}  /tmp/${FILE_NAME}" | sha256sum -c - && \
+    tar -xzf "/tmp/${FILE_NAME}" -C /usr/bin/ gost && \
+    rm -f "/tmp/${FILE_NAME}" && \
+    chmod +x /usr/bin/gost && \
+    WGCF_VERSION="2.2.32" && \
     curl -fsSL -o /usr/bin/wgcf "https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VERSION}/wgcf_${WGCF_VERSION}_linux_${ARCH}" && \
     echo "${WGCF_SHA256}  /usr/bin/wgcf" | sha256sum -c && \
     chmod +x /usr/bin/wgcf && \
     WIREPROXY_VERSION="1.1.3" && \
-    curl -fsSL -o /tmp/wireproxy.tar.gz "https://github.com/pufferffish/wireproxy/releases/download/v${WIREPROXY_VERSION}/wireproxy_linux_${ARCH}.tar.gz" && \
+    curl -fsSL -o /tmp/wireproxy.tar.gz "https://github.com/windtf/wireproxy/releases/download/v${WIREPROXY_VERSION}/wireproxy_linux_${ARCH}.tar.gz" && \
     echo "${WIREPROXY_SHA256}  /tmp/wireproxy.tar.gz" | sha256sum -c && \
     tar -xzf /tmp/wireproxy.tar.gz -C /usr/bin/ wireproxy && \
     rm -f /tmp/wireproxy.tar.gz && \
@@ -85,15 +88,6 @@ ENV LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS=true
 ENV LIGHTWEIGHT_REGISTRATION_DELAY=2
 ENV LIGHTWEIGHT_EGRESS_CHECK_INTERVAL=60
 
-ENV WARP_INSTANCES=10
-ENV WARP_CONNECT_TIMEOUT=30
-ENV PROXY_MODE=dedicated
-ENV PROXY_BASE_PORT=2080
-ENV PROXY_USER=
-ENV PROXY_PASS=
-ENV PROXY_MAX_CONN=10
-ENV PROXY_MAX_RPS=50
-ENV PROXY_ALLOWED_IPS=
 ENV SS_METHOD=chacha20-ietf-poly1305
 ENV ADMIN_ENABLED=false
 ENV ADMIN_PORT=9090
@@ -101,7 +95,6 @@ ENV ADMIN_USER=admin
 ENV ADMIN_PASSWORD=
 ENV ADMIN_MAX_INSTANCES=45
 ENV MAX_WARP_INSTANCES=45
-ENV AUTO_REFRESH_INTERVAL=60
 ENV WARP_WATCHDOG_ENABLED=true
 ENV WARP_WATCHDOG_INTERVAL=30
 ENV WARP_WATCHDOG_FAILURE_THRESHOLD=3
