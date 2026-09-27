@@ -49,6 +49,9 @@ services:
         aliases:
           - omniroute_warp-proxy
           - omniroute_warp-proxy_undefined
+      omniroute-network:
+        aliases:
+          - omniroute_warp-proxy
 
 volumes:
   warp-data:
@@ -57,3 +60,7 @@ networks:
   dokploy-network:
     external: true
     name: dokploy-network
+
+  omniroute-network:
+    external: true
+    name: omniroute-0vwsth_default
