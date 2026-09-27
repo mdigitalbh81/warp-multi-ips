@@ -706,4 +706,102 @@ legend {
   .mobile-cards {
     display: none !important;
   }
+}/* Panel Header & Subtitle */
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.panel-title-group h2 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.panel-subtitle {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* OmniRoute Section */
+.omniroute-section {
+  padding: 20px;
+  margin-top: 20px;
+}
+
+.omniroute-textarea {
+  width: 100%;
+  min-height: 140px;
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  background: #0e1117;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+/* Diagnostics Section */
+.diagnostics-section {
+  padding: 20px;
+  margin-top: 20px;
+}
+
+.diag-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.diag-item {
+  background: var(--panel-2);
+  padding: 12px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+
+.diag-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.diag-val {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-word;
+}
+
+/* Responsive */
+@media (max-width: 760px) {
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .metrics, .form-grid {
+    grid-template-columns: 1fr;
+  }
+  /* Hide table on mobile, show cards */
+  #instancesPanel {
+    display: none;
+  }
+  .mobile-cards {
+    display: block;
+  }
+}
+
+@media (min-width: 761px) {
+  .mobile-cards {
+    display: none !important;
+  }
 }

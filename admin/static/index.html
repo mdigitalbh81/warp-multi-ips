@@ -47,19 +47,20 @@
       </div>
     </section>
 
-    <section class="panel">
+    <!-- Desktop Instances Table Panel -->
+    <section class="panel" id="instancesPanel">
       <div class="table-wrap" id="tableWrap">
         <table>
           <thead>
             <tr>
-            <th>Instance</th>
-            <th><span class="th-tip" title="Engine powering this instance (Official warp-svc or Lightweight wireproxy)">Engine</span></th>
-              <th><span class="th-tip" title="IP/hostname that OmniRoute uses to access the SOCKS5 ports">OmniRoute Proxy</span></th>
-            <th><span class="th-tip" title="Public address currently used by Cloudflare WARP for outbound traffic">Current Egress IP</span></th>
-            <th><span class="th-tip" title="Previous IPv6 egress IP before last change">Previous IPv6</span></th>
-            <th><span class="th-tip" title="Whether this instance has a unique IPv6 egress without collision">Unique</span></th>
+              <th>Instance</th>
+              <th><span class="th-tip" title="Engine powering the instance (Official warp-svc or Lightweight wireproxy)">Engine</span></th>
+              <th><span class="th-tip" title="IP/hostname and port OmniRoute uses to access SOCKS5 proxy">OmniRoute Proxy</span></th>
+              <th><span class="th-tip" title="Public address currently used for Cloudflare WARP outbound traffic">Current Egress IP</span></th>
+              <th><span class="th-tip" title="Previous IPv6 egress before last change">Previous IPv6</span></th>
+              <th><span class="th-tip" title="Whether instance has unique IPv6 egress without collision">Unique</span></th>
               <th>Country</th>
-              <th><span class="th-tip" title="Cloudflare colocation/datacenter currently handling this WARP egress. Example: GRU = S&#xe3;o Paulo/Guarulhos.">Colo</span></th>
+              <th><span class="th-tip" title="Cloudflare colocation/datacenter currently handling WARP egress. Example: GRU is São Paulo/Guarulhos.">Colo</span></th>
               <th>Notes</th>
               <th>WARP</th>
               <th>Health</th>
@@ -74,11 +75,68 @@
     <!-- Mobile card view -->
     <section class="mobile-cards" id="mobileCards" hidden></section>
 
+    <!-- Visible OmniRoute Export Section -->
+    <section class="panel omniroute-section" id="omnirouteExportSection">
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <h2>OmniRoute Export</h2>
+          <p class="panel-subtitle">Bulk proxy list formatted for OmniRoute scrapers and proxy pools</p>
+        </div>
+        <div class="actions">
+          <button id="sectionExportCopy" type="button">Copy OmniRoute Proxies</button>
+          <button id="sectionExportDownload" type="button" class="secondary">Download / Export</button>
+        </div>
+      </div>
+      <div id="sectionExportMeta" class="export-meta">
+        <span>Proxy Host: <strong id="metaHost">-</strong></span>
+        <span>Port Range: <strong id="metaPortRange">-</strong></span>
+        <span>Healthy: <strong id="metaHealthy">-</strong></span>
+        <span>Unique IPv6: <strong id="metaUnique">-</strong></span>
+        <span>Engine: <strong id="metaEngine">-</strong></span>
+      </div>
+      <div id="sectionExportWarning" class="export-warning" hidden></div>
+      <div id="sectionExportError" class="export-error" hidden></div>
+      <textarea id="sectionExportText" class="omniroute-textarea" readonly rows="8" placeholder="Loading OmniRoute proxies export..."></textarea>
+    </section>
+
+    <!-- Diagnostics & Status Section -->
+    <section class="panel diagnostics-section" id="diagnosticsSection">
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <h2>Diagnostics & Status</h2>
+          <p class="panel-subtitle">Operational background health (safe, secrets are never exposed)</p>
+        </div>
+      </div>
+      <div class="diag-grid">
+        <div class="diag-item">
+          <span class="diag-label">Last Operation</span>
+          <span class="diag-val" id="diagLastOp">Idle</span>
+        </div>
+        <div class="diag-item">
+          <span class="diag-label">Last Error</span>
+          <span class="diag-val" id="diagLastError">None</span>
+        </div>
+        <div class="diag-item">
+          <span class="diag-label">Last Refresh</span>
+          <span class="diag-val" id="diagLastRefresh">-</span>
+        </div>
+        <div class="diag-item">
+          <span class="diag-label">Watchdog Status</span>
+          <span class="diag-val" id="diagWatchdog">Active</span>
+        </div>
+        <div class="diag-item">
+          <span class="diag-label">Collision Status</span>
+          <span class="diag-val" id="diagCollision">All unique</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Settings Dialog -->
     <dialog id="settingsDialog">
       <form id="settingsForm" method="dialog">
         <header class="dialog-head">
           <h2>Settings</h2>
-          <button id="closeSettings" type="button" class="icon">x</button>
+          <button id="closeSettings" type="button" class="icon">✕</button>
         </header>
 
         <div class="form-grid">
@@ -89,6 +147,7 @@
               <option value="wireproxy">Wireproxy (wgcf + wireproxy)</option>
             </select>
           </label>
+
           <label>
             Egress Family
             <select name="lightweight_egress_family">
@@ -97,6 +156,7 @@
               <option value="auto">Auto</option>
             </select>
           </label>
+
           <label>
             Proxy Mode
             <select name="proxy_mode">
@@ -104,31 +164,38 @@
               <option value="round-robin">Round Robin</option>
             </select>
           </label>
+
           <label>
             Number of Instances
             <input name="instances" type="number" min="1" max="45" step="1" required>
           </label>
+
           <label>
             Proxy Base Port
             <input name="proxy_base_port" type="number" min="1" max="65535" step="1" required>
           </label>
+
           <label>
             OmniRoute Proxy Host
-            <input name="proxy_host_omniroute" type="text" placeholder="e.g. 10.0.0.254 or proxy.example.com">
+            <input name="proxy_host_omniroute" type="text" placeholder="e.g. omniroute_warp-proxy">
           </label>
+
           <label>
             Proxy Max RPS
             <input name="proxy_max_rps" type="number" min="1" max="100000" step="1" required>
           </label>
+
           <label>
             WARP Connect Timeout
             <input name="warp_connect_timeout" type="number" min="5" max="600" step="1" required>
           </label>
+
           <label>
             Auto Refresh Interval
             <input name="auto_refresh_interval" type="number" min="15" max="3600" step="1" required>
           </label>
         </div>
+
         <label class="check" style="margin-top: 10px;">
           <input name="lightweight_require_unique_egress" type="checkbox">
           Require Unique IPv6 Egress (Wireproxy engine)
@@ -202,11 +269,12 @@
       </form>
     </dialog>
 
+    <!-- Export Dialog -->
     <dialog id="exportDialog">
       <div class="export-content">
         <header class="dialog-head">
           <h2>Export OmniRoute</h2>
-          <button id="closeExport" type="button" class="icon">x</button>
+          <button id="closeExport" type="button" class="icon">✕</button>
         </header>
         <div id="exportError" class="export-error" hidden></div>
         <div id="exportAuthWarning" class="export-warning" hidden></div>
@@ -220,6 +288,7 @@
       </div>
     </dialog>
   </main>
+
   <script src="/app.js"></script>
 </body>
 </html>

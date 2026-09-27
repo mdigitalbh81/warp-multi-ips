@@ -500,21 +500,55 @@ validate_runtime_config() {
 
 write_admin_env_file() {
     {
-        printf 'WARP_INSTANCES=%s\n' "$WARP_INSTANCES"
-        printf 'PROXY_MODE=%s\n' "$PROXY_MODE"
-        printf 'PROXY_BASE_PORT=%s\n' "$PROXY_BASE_PORT"
-        printf 'PROXY_MAX_RPS=%s\n' "${PROXY_MAX_RPS:-50}"
-        printf 'WARP_CONNECT_TIMEOUT=%s\n' "${WARP_CONNECT_TIMEOUT:-30}"
-        printf 'AUTO_REFRESH_INTERVAL=%s\n' "${AUTO_REFRESH_INTERVAL:-60}"
-        printf 'PROXY_AUTH_ENABLED=%s\n' "${PROXY_AUTH_ENABLED:-false}"
-	printf 'PROXY_USER=%s\n' "${PROXY_USER:-}"
-	printf 'PROXY_HOST_OMNIROUTE=%s\n' "${PROXY_HOST_OMNIROUTE:-}"
-	printf 'WARP_ENGINE=%s\n' "${WARP_ENGINE:-official}"
-	printf 'LIGHTWEIGHT_EGRESS_FAMILY=%s\n' "${LIGHTWEIGHT_EGRESS_FAMILY:-ipv6}"
-	printf 'LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS=%s\n' "${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-true}"
-	printf 'LIGHTWEIGHT_REGISTRATION_DELAY=%s\n' "${LIGHTWEIGHT_REGISTRATION_DELAY:-10}"
-	printf 'LIGHTWEIGHT_EGRESS_CHECK_INTERVAL=%s\n' "${LIGHTWEIGHT_EGRESS_CHECK_INTERVAL:-60}"
-} > "$WARP_ENV_FILE"
+        printf 'WARP_INSTANCES=%s
+' "$WARP_INSTANCES"
+        printf 'ENV_WARP_INSTANCES_SET=%s
+' "${ENV_WARP_INSTANCES_SET:-false}"
+        printf 'PROXY_MODE=%s
+' "$PROXY_MODE"
+        printf 'ENV_PROXY_MODE_SET=%s
+' "${ENV_PROXY_MODE_SET:-false}"
+        printf 'PROXY_BASE_PORT=%s
+' "$PROXY_BASE_PORT"
+        printf 'ENV_PROXY_BASE_PORT_SET=%s
+' "${ENV_PROXY_BASE_PORT_SET:-false}"
+        printf 'PROXY_MAX_RPS=%s
+' "${PROXY_MAX_RPS:-50}"
+        printf 'ENV_PROXY_MAX_RPS_SET=%s
+' "${ENV_PROXY_MAX_RPS_SET:-false}"
+        printf 'WARP_CONNECT_TIMEOUT=%s
+' "${WARP_CONNECT_TIMEOUT:-30}"
+        printf 'ENV_WARP_CONNECT_TIMEOUT_SET=%s
+' "${ENV_WARP_CONNECT_TIMEOUT_SET:-false}"
+        printf 'AUTO_REFRESH_INTERVAL=%s
+' "${AUTO_REFRESH_INTERVAL:-60}"
+        printf 'ENV_AUTO_REFRESH_INTERVAL_SET=%s
+' "${ENV_AUTO_REFRESH_INTERVAL_SET:-false}"
+        printf 'PROXY_AUTH_ENABLED=%s
+' "${PROXY_AUTH_ENABLED:-false}"
+        printf 'PROXY_USER=%s
+' "${PROXY_USER:-}"
+        printf 'PROXY_HOST_OMNIROUTE=%s
+' "${PROXY_HOST_OMNIROUTE:-}"
+        printf 'ENV_PROXY_HOST_OMNIROUTE_SET=%s
+' "${ENV_PROXY_HOST_OMNIROUTE_SET:-false}"
+        printf 'WARP_ENGINE=%s
+' "${WARP_ENGINE:-official}"
+        printf 'ENV_WARP_ENGINE_SET=%s
+' "${ENV_WARP_ENGINE_SET:-false}"
+        printf 'LIGHTWEIGHT_EGRESS_FAMILY=%s
+' "${LIGHTWEIGHT_EGRESS_FAMILY:-ipv6}"
+        printf 'ENV_LIGHTWEIGHT_EGRESS_FAMILY_SET=%s
+' "${ENV_LIGHTWEIGHT_EGRESS_FAMILY_SET:-false}"
+        printf 'LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS=%s
+' "${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-true}"
+        printf 'ENV_LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS_SET=%s
+' "${ENV_LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS_SET:-false}"
+        printf 'LIGHTWEIGHT_REGISTRATION_DELAY=%s
+' "${LIGHTWEIGHT_REGISTRATION_DELAY:-10}"
+        printf 'LIGHTWEIGHT_EGRESS_CHECK_INTERVAL=%s
+' "${LIGHTWEIGHT_EGRESS_CHECK_INTERVAL:-60}"
+    } > "$WARP_ENV_FILE"
 }
 
 gost_auth_block() {

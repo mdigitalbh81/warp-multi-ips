@@ -33,10 +33,33 @@ ENV_PROXY_HOST_OMNIROUTE="${PROXY_HOST_OMNIROUTE:-${PROXY_HOST:-}}"
 init_admin_config
 load_admin_config
 validate_runtime_config
+write_op_state() {
+    local status="$1"
+    local msg="$2"
+    local cur="${3:-0}"
+    local tot="${4:-0}"
+    local err="${5:-}"
+    cat <<EOF > /tmp/operation-state.json
+{
+  "status": "${status}",
+  "message": "${msg}",
+  "current": ${cur},
+  "total": ${tot},
+  "error": "${err}",
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+EOF
+}
+
+ADMIN_PID=""
 if [ "${ADMIN_ENABLED:-false}" = "true" ]; then
     sudo chown -R warp:warp /var/lib/cloudflare-warp
+    write_admin_env_file
+    write_op_state "running" "Starting admin panel and initializing instances..." 0 "${WARP_INSTANCES:-1}"
+    echo "Starting admin panel on :${ADMIN_PORT:-9090}"
+    python3 /admin/server.py &
+    ADMIN_PID=$!
 fi
-write_admin_env_file
 
 # ---- Parse license key(s) — WARP_LICENSE_KEY accepts comma-separated values ----
 LICENSE_KEYS=()
@@ -313,10 +336,13 @@ fi
 echo "========================================"
 echo ""
 
+write_op_state "running" "Starting ${WARP_INSTANCES} instances (${WARP_ENGINE:-official})..." 0 "$WARP_INSTANCES"
+
 # ---- start each WARP instance with isolated paths ----
 INSTANCE_PIDS=()
 for i in $(seq 0 $((WARP_INSTANCES - 1))); do
     PORT=$((40000 + i))
+    write_op_state "running" "Starting instance $((i + 1))/${WARP_INSTANCES}..." "$((i + 1))" "$WARP_INSTANCES"
     /start-warp-instance.sh \
         "$i" "$PORT" "$LICENSE_KEYS_CSV" "${WARP_CONNECT_TIMEOUT:-30}" &
     INSTANCE_PIDS+=($!)
@@ -334,6 +360,7 @@ for i in $(seq 0 $((WARP_INSTANCES - 1))); do
     fi
 done
 # ---- verify each instance is connected to WARP (parallel) ----
+write_op_state "running" "Verifying WARP instances..." "$WARP_INSTANCES" "$WARP_INSTANCES"
 echo ""
 echo "Verifying WARP instances (parallel)..."
 READY_COUNT=0
@@ -400,8 +427,14 @@ echo "${READY_COUNT}/${WARP_INSTANCES} WARP instances ready"
 
 if [ "$READY_COUNT" -eq 0 ]; then
     rm -rf "$VERIFY_DIR"
-    echo "Error: no WARP instances started successfully. Exiting."
-    exit 1
+    write_op_state "error" "No WARP instances started successfully" 0 "$WARP_INSTANCES" "All instances failed to connect"
+    if [ "${ADMIN_ENABLED:-false}" != "true" ]; then
+        echo "Error: no WARP instances started successfully. Exiting."
+        exit 1
+    fi
+    echo "Warning: 0 instances ready. Keeping admin panel running for diagnostics and reconfiguration."
+else
+    write_op_state "idle" "Ready (${READY_COUNT}/${WARP_INSTANCES} healthy)" "$READY_COUNT" "$WARP_INSTANCES"
 fi
 
 # ---- generate GOST config (dedicated: all instances; round-robin: verified instances) ----
@@ -470,13 +503,7 @@ elif [ "$WARP_INSTANCES" -gt 1 ]; then
     echo "Watchdog disabled (WARP_WATCHDOG_ENABLED=false)"
 fi
 
-# ---- start optional admin panel ----
-ADMIN_PID=""
-if [ "${ADMIN_ENABLED:-false}" = "true" ]; then
-    echo "Starting admin panel on :${ADMIN_PORT:-9090}"
-    python3 /admin/server.py &
-    ADMIN_PID=$!
-fi
+# Admin panel started at container launch if ADMIN_ENABLED=true
 
 # ---- start GOST (foreground keeps container alive) ----
 if [ "$PROXY_MODE" = "dedicated" ]; then

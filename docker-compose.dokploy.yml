@@ -23,20 +23,21 @@ services:
       - "9090:9090"
 
     environment:
-      WARP_INSTANCES: "${WARP_INSTANCES:-20}"
+      WARP_ENGINE: "${WARP_ENGINE:-}"
+      WARP_INSTANCES: "${WARP_INSTANCES:-}"
 
-      PROXY_MODE: "dedicated"
-      PROXY_BASE_PORT: "2080"
+      PROXY_MODE: "${PROXY_MODE:-dedicated}"
+      PROXY_BASE_PORT: "${PROXY_BASE_PORT:-2080}"
 
-      PROXY_MAX_CONN: "200"
-      PROXY_MAX_RPS: "50"
+      PROXY_MAX_CONN: "${PROXY_MAX_CONN:-200}"
+      PROXY_MAX_RPS: "${PROXY_MAX_RPS:-50}"
 
-      WARP_CONNECT_TIMEOUT: "90"
+      WARP_CONNECT_TIMEOUT: "${WARP_CONNECT_TIMEOUT:-90}"
 
-      ADMIN_ENABLED: "true"
-      ADMIN_PORT: "9090"
-      ADMIN_USER: "${ADMIN_USER}"
-      ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
+      ADMIN_ENABLED: "${ADMIN_ENABLED:-true}"
+      ADMIN_PORT: "${ADMIN_PORT:-9090}"
+      ADMIN_USER: "${ADMIN_USER:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
 
       PROXY_HOST_OMNIROUTE: "${PROXY_HOST_OMNIROUTE:-omniroute_warp-proxy}"
 

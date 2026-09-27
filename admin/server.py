@@ -636,8 +636,13 @@ def is_explicit_env(env_key):
     flag = f"ENV_{env_key}_SET"
     if flag in os.environ:
         return os.environ[flag] == "true"
+    env = read_env_file()
+    if flag in env:
+        return env[flag] == "true"
+    if os.environ.get(flag) in ("false", "0", ""):
+        return False
     val = os.environ.get(env_key)
-    if nonempty(val):
+    if nonempty(val) and f"ENV_{env_key}_SET" not in os.environ and f"ENV_{env_key}_SET" not in env:
         return True
     if env_key == "PROXY_HOST_OMNIROUTE" and nonempty(os.environ.get("PROXY_HOST")):
         return True
@@ -1453,27 +1458,39 @@ def reload_gost(cfg):
 
 
 def start_instance(index, cfg):
-    subprocess.Popen([
-        "/start-warp-instance.sh",
-        str(index),
-        str(40000 + index),
-        os.environ.get("LICENSE_KEYS_CSV", os.environ.get("WARP_LICENSE_KEY", "")),
-        str(cfg["warp_connect_timeout"]),
-    ], env=os.environ.copy())
+    env = os.environ.copy()
+    env["WARP_ENGINE"] = str(cfg.get("warp_engine", "official"))
+    env["LIGHTWEIGHT_EGRESS_FAMILY"] = str(cfg.get("lightweight_egress_family", "ipv6"))
+    env["LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS"] = str(cfg.get("lightweight_require_unique_egress", True)).lower()
+    start_script = Path("/start-warp-instance.sh")
+    if not start_script.exists():
+        start_script = Path(__file__).resolve().parents[1] / "start-warp-instance.sh"
+    subprocess.Popen(
+        [
+            str(start_script),
+            str(index),
+            str(40000 + index),
+            os.environ.get("LICENSE_KEYS_CSV", os.environ.get("WARP_LICENSE_KEY", "")),
+            str(cfg.get("warp_connect_timeout", 30)),
+        ],
+        env=env,
+    )
 
 
 def stop_instance(index):
-    pid_file = Path(f"/tmp/warp-instance-{index}.pid")
-    if pid_file.exists():
-        try:
-            os.kill(int(pid_file.read_text().strip()), signal.SIGTERM)
-        except (ProcessLookupError, ValueError):
-            pass
-        try:
-            pid_file.unlink()
-        except FileNotFoundError:
-            pass
-    subprocess.run(["pkill", "-f", f"STATE_DIRECTORY=.*instance-{index}"], capture_output=True)
+    for pid_name in (f"wireproxy-instance-{index}.pid", f"warp-instance-{index}.pid"):
+        pid_file = Path(f"/tmp/{pid_name}")
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text().strip()), signal.SIGTERM)
+            except (ProcessLookupError, ValueError):
+                pass
+            try:
+                pid_file.unlink()
+            except FileNotFoundError:
+                pass
+    subprocess.run(["pkill", "-f", f"instance-{index}"], capture_output=True)
+    subprocess.run(["pkill", "-f", f"wireproxy.*instance-{index}"], capture_output=True)
 
 
 def wait_internal(index, timeout):
@@ -1509,24 +1526,21 @@ def rollback_config(old_cfg, started_indices, stopped_indices, config_saved):
 def apply_config(new_cfg):
     with CONFIG_LOCK:
         old_cfg = get_config(True)
-        # Enforce environment variable priority over admin-config.json
-        for key, env_key in [
-            ("instances", "WARP_INSTANCES"),
-            ("proxy_mode", "PROXY_MODE"),
-            ("proxy_base_port", "PROXY_BASE_PORT"),
-            ("proxy_max_rps", "PROXY_MAX_RPS"),
-            ("warp_connect_timeout", "WARP_CONNECT_TIMEOUT"),
-            ("auto_refresh_interval", "AUTO_REFRESH_INTERVAL"),
-            ("proxy_host_omniroute", "PROXY_HOST_OMNIROUTE"),
-        ]:
-            if is_explicit_env(env_key):
-                new_cfg[key] = old_cfg[key]
         errors = validate_config(new_cfg)
         if errors:
             return {"ok": False, "errors": errors}, 400
+
         old_instances = old_cfg["instances"]
         new_instances = new_cfg["instances"]
-        total_steps = abs(new_instances - old_instances) + 3
+        old_engine = old_cfg.get("warp_engine", "official")
+        new_engine = new_cfg.get("warp_engine", "official")
+        engine_changed = old_engine != new_engine
+
+        if engine_changed:
+            total_steps = old_instances + new_instances + 3
+        else:
+            total_steps = abs(new_instances - old_instances) + 3
+
         STATE["operation"] = {
             "status": "running",
             "started": utc_now(),
@@ -1534,6 +1548,10 @@ def apply_config(new_cfg):
             "current": 0,
             "total": total_steps,
         }
+        try:
+            write_json_atomic(Path("/tmp/operation-state.json"), STATE["operation"])
+        except Exception:
+            pass
 
         def set_progress(message, current=None):
             op = STATE.get("operation") or {}
@@ -1541,39 +1559,64 @@ def apply_config(new_cfg):
             if current is not None:
                 op["current"] = current
             STATE["operation"] = op
+            try:
+                write_json_atomic(Path("/tmp/operation-state.json"), op)
+            except Exception:
+                pass
 
         try:
             step = 0
             started_indices = []
             stopped_indices = []
             config_saved = False
-            if new_instances > old_instances:
-                for index in range(old_instances, new_instances):
+
+            if engine_changed:
+                for index in range(old_instances):
                     step += 1
-                    set_progress(f"Starting WARP instance {index + 1}", step)
-                    start_instance(index, new_cfg)
-                    started_indices.append(index)
-                    set_progress(f"Waiting for WARP instance {index + 1}", step)
-                    if not wait_internal(index, new_cfg["warp_connect_timeout"]):
-                        raise RuntimeError(f"WARP instance {index + 1} did not become ready")
-            elif new_instances < old_instances:
-                for index in range(new_instances, old_instances):
-                    step += 1
-                    set_progress(f"Stopping WARP instance {index + 1}", step)
+                    set_progress(f"Stopping old instance {index + 1}", step)
                     stop_instance(index)
                     stopped_indices.append(index)
                     STATE["egress"].pop(index + 1, None)
+
+                for index in range(new_instances):
+                    step += 1
+                    set_progress(f"Starting instance {index + 1} ({new_engine})", step)
+                    start_instance(index, new_cfg)
+                    started_indices.append(index)
+                    set_progress(f"Waiting for instance {index + 1}", step)
+                    if not wait_internal(index, new_cfg.get("warp_connect_timeout", 30)):
+                        raise RuntimeError(f"Instance {index + 1} did not become ready")
+            else:
+                if new_instances > old_instances:
+                    for index in range(old_instances, new_instances):
+                        step += 1
+                        set_progress(f"Starting WARP instance {index + 1}", step)
+                        start_instance(index, new_cfg)
+                        started_indices.append(index)
+                        set_progress(f"Waiting for WARP instance {index + 1}", step)
+                        if not wait_internal(index, new_cfg.get("warp_connect_timeout", 30)):
+                            raise RuntimeError(f"WARP instance {index + 1} did not become ready")
+                elif new_instances < old_instances:
+                    for index in range(new_instances, old_instances):
+                        step += 1
+                        set_progress(f"Stopping WARP instance {index + 1}", step)
+                        stop_instance(index)
+                        stopped_indices.append(index)
+                        STATE["egress"].pop(index + 1, None)
 
             step += 1
             set_progress("Saving configuration", step)
             write_json_atomic(CONFIG_FILE, new_cfg)
             config_saved = True
+
             step += 1
             set_progress("Restarting GOST listeners", step)
             reload_gost(new_cfg)
+
             step += 1
             set_progress("Refreshing Current Egress IPs", step)
             refresh_all(force=True)
+
             STATE["operation"] = {
                 "status": "idle",
                 "finished": utc_now(),
@@ -1581,7 +1624,12 @@ def apply_config(new_cfg):
                 "current": total_steps,
                 "total": total_steps,
             }
+            try:
+                write_json_atomic(Path("/tmp/operation-state.json"), STATE["operation"])
+            except Exception:
+                pass
             return {"ok": True, "config": public_config()}, 200
+
         except Exception as exc:
             rollback_errors = rollback_config(old_cfg, started_indices, stopped_indices, config_saved)
             errors = [str(exc)]
@@ -1595,6 +1643,10 @@ def apply_config(new_cfg):
                 "current": (STATE.get("operation") or {}).get("current", 0),
                 "total": total_steps,
             }
+            try:
+                write_json_atomic(Path("/tmp/operation-state.json"), STATE["operation"])
+            except Exception:
+                pass
             return {"ok": False, "errors": errors}, 500
 
 
@@ -1771,25 +1823,34 @@ class Handler(SimpleHTTPRequestHandler):
         elif parsed.path == "/api/status":
             instances = get_instances()
             healthy = sum(1 for item in instances if item["health"] == "healthy")
-            unique_egresses = len(set(
-                item.get("ipv6_egress") or item.get("egress_ip")
-                for item in instances
-                if item["health"] == "healthy" and (item.get("ipv6_egress") or item.get("egress_ip"))
-            ))
+            unique_egresses = len(
+                set(
+                    item.get("ipv6_egress") or item.get("egress_ip")
+                    for item in instances
+                    if item["health"] == "healthy"
+                    and (item.get("ipv6_egress") or item.get("egress_ip"))
+                )
+            )
             cfg = public_config()
-            self.send_json({
-                "engine": cfg.get("warp_engine", "official"),
-                "configured_instances": cfg["instances"],
-                "healthy_instances": healthy,
-                "unique_egresses": unique_egresses,
-                "egress_family": cfg.get("lightweight_egress_family", "ipv6"),
-                "unique_egress_required": cfg.get("lightweight_require_unique_egress", True),
-                "max_instances": MAX_INSTANCES,
-                "proxy_mode": cfg["proxy_mode"],
-                "proxy_base_port": cfg["proxy_base_port"],
-                "operation": STATE.get("operation"),
-                "last_refresh": STATE.get("last_refresh_finished"),
-            })
+            op = STATE.get("operation")
+            if not op and Path("/tmp/operation-state.json").exists():
+                op = read_json(Path("/tmp/operation-state.json"), None)
+            self.send_json(
+                {
+                    "engine": cfg.get("warp_engine", "official"),
+                    "configured_instances": cfg["instances"],
+                    "healthy_instances": healthy,
+                    "unique_egresses": unique_egresses,
+                    "egress_family": cfg.get("lightweight_egress_family", "ipv6"),
+                    "unique_egress_required": cfg.get("lightweight_require_unique_egress", True),
+                    "max_instances": MAX_INSTANCES,
+                    "proxy_mode": cfg["proxy_mode"],
+                    "proxy_base_port": cfg["proxy_base_port"],
+                    "proxy_host_omniroute": cfg.get("proxy_host_omniroute", ""),
+                    "operation": op,
+                    "last_refresh": STATE.get("last_refresh_finished"),
+                }
+            )
         elif parsed.path == "/api/watchdog":
             self.send_json(read_watchdog_state())
         elif parsed.path == "/api/export/omniroute":
