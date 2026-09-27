@@ -1,13 +1,12 @@
 #!/bin/bash
-
 # Copyright (c) 2025 Ercin Dedeoglu
 # Licensed under CC BY-NC 4.0 (Attribution-NonCommercial)
 # https://github.com/ErcinDedeoglu/cloudflare-warp
 #
-# Commercial use is prohibited. For personal/educational use,
-# you must provide public attribution to this project.
+# Lightweight wireproxy-only entrypoint.
+# All WARP connectivity is handled by wgcf + wireproxy.
 
-set -e
+set -euo pipefail
 
 if [ -f "/warp-common.sh" ]; then
     . /warp-common.sh
@@ -33,6 +32,19 @@ ENV_PROXY_HOST_OMNIROUTE="${PROXY_HOST_OMNIROUTE:-${PROXY_HOST:-}}"
 init_admin_config
 load_admin_config
 validate_runtime_config
+
+# Migrate old config that may contain warp_engine=official
+if [ "${ADMIN_ENABLED:-false}" = "true" ] && [ -f "$ADMIN_CONFIG_FILE" ]; then
+    if command -v jq &>/dev/null; then
+        _old_engine=$(jq -r '.warp_engine // ""' "$ADMIN_CONFIG_FILE" 2>/dev/null || true)
+        if [ -n "$_old_engine" ]; then
+            jq 'del(.warp_engine)' "$ADMIN_CONFIG_FILE" > "${ADMIN_CONFIG_FILE}.tmp" && \
+                mv "${ADMIN_CONFIG_FILE}.tmp" "$ADMIN_CONFIG_FILE" 2>/dev/null || true
+            echo "Migration: removed deprecated warp_engine field from admin config"
+        fi
+    fi
+fi
+
 write_op_state() {
     local status="$1"
     local msg="$2"
@@ -41,349 +53,89 @@ write_op_state() {
     local err="${5:-}"
     cat <<EOF > /tmp/operation-state.json
 {
-  "status": "${status}",
-  "message": "${msg}",
-  "current": ${cur},
-  "total": ${tot},
-  "error": "${err}",
-  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    "status": "${status}",
+    "message": "${msg}",
+    "current": ${cur},
+    "total": ${tot},
+    "error": "${err}",
+    "timestamp": "$(date +"%Y-%m-%dT%H:%M:%SZ")"
 }
 EOF
 }
 
 ADMIN_PID=""
 if [ "${ADMIN_ENABLED:-false}" = "true" ]; then
-    sudo chown -R warp:warp /var/lib/cloudflare-warp
+    sudo chown -R warp:warp /var/lib/cloudflare-warp 2>/dev/null || true
     write_admin_env_file
-    write_op_state "running" "Starting admin panel and initializing instances..." 0 "${WARP_INSTANCES:-1}"
+    write_op_state "running" "Starting admin panel and initializing instances..." 0 "${WARP_INSTANCES:-10}"
     echo "Starting admin panel on :${ADMIN_PORT:-9090}"
     python3 /admin/server.py &
     ADMIN_PID=$!
 fi
 
-# ---- Parse license key(s) — WARP_LICENSE_KEY accepts comma-separated values ----
-LICENSE_KEYS=()
-if [ -n "${WARP_LICENSE_KEY:-}" ]; then
-    IFS=',' read -ra _RAW_KEYS <<< "$WARP_LICENSE_KEY"
-    for _k in "${_RAW_KEYS[@]}"; do
-        _k=$(echo "$_k" | xargs)
-        [ -n "$_k" ] && LICENSE_KEYS+=("$_k")
-    done
-fi
-NUM_KEYS=${#LICENSE_KEYS[@]}
-
-# Reconstruct cleaned CSV for passing to instance scripts and change detection
-LICENSE_KEYS_CSV=""
-if [ "$NUM_KEYS" -gt 0 ]; then
-    LICENSE_KEYS_CSV=$(IFS=','; echo "${LICENSE_KEYS[*]}")
-fi
-export LICENSE_KEYS_CSV
-
-# ---- Zero Trust enrollment mode (service token auth) ----
-ZT_MODE=false
-if [ -n "${WARP_ORG:-}" ]; then
-    if [ -z "${WARP_AUTH_CLIENT_ID:-}" ] || [ -z "${WARP_AUTH_CLIENT_SECRET:-}" ]; then
-        echo "Error: WARP_ORG is set but WARP_AUTH_CLIENT_ID and/or WARP_AUTH_CLIENT_SECRET are missing."
-        echo "All three variables are required for Zero Trust enrollment."
-        exit 1
-    fi
-    if [ "$NUM_KEYS" -gt 0 ]; then
-        echo "Error: WARP_ORG and WARP_LICENSE_KEY are mutually exclusive."
-        echo "Use WARP_ORG for Zero Trust enrollment OR WARP_LICENSE_KEY for WARP+ — not both."
-        exit 1
-    fi
-    ZT_MODE=true
-fi
-
-# ---- helper: write MDM XML for Zero Trust enrollment ----
-# warp-svc reads mdm.xml from its data directory on startup and auto-enrolls
-# into the Zero Trust org using the service token — no browser required.
-# $1 = data directory, $2 = proxy port
-write_mdm_xml() {
-    local data_dir="$1"
-    local port="$2"
-    local mdm_file="${data_dir}/mdm.xml"
-    sudo tee "$mdm_file" > /dev/null <<MDMEOF
-<dict>
-  <key>organization</key>
-  <string>${WARP_ORG}</string>
-  <key>auth_client_id</key>
-  <string>${WARP_AUTH_CLIENT_ID}</string>
-  <key>auth_client_secret</key>
-  <string>${WARP_AUTH_CLIENT_SECRET}</string>
-  <key>service_mode</key>
-  <string>proxy</string>
-  <key>proxy_port</key>
-  <integer>${port}</integer>
-  <key>auto_connect</key>
-  <integer>1</integer>
-  <key>switch_locked</key>
-  <true/>
-  <key>onboarding</key>
-  <false/>
-</dict>
-MDMEOF
-    echo "MDM config written to ${mdm_file} (org: ${WARP_ORG}, port: ${port})"
-}
-
 # ==============================================================================
-# SINGLE INSTANCE MODE (default, fully backward-compatible)
-# ==============================================================================
-if [ "$WARP_INSTANCES" -eq 1 ] && [ "$PROXY_MODE" != "dedicated" ] && [ "${ADMIN_ENABLED:-false}" != "true" ] && [ "${WARP_ENGINE:-official}" = "official" ]; then
-
-    # start dbus
-    sudo mkdir -p /run/dbus
-    if [ -f /run/dbus/pid ]; then
-        sudo rm /run/dbus/pid
-    fi
-    sudo dbus-daemon --config-file=/usr/share/dbus-1/system.conf
-
-    # Write MDM config for Zero Trust (must happen before warp-svc reads data dir)
-    if [ "$ZT_MODE" = true ]; then
-        write_mdm_xml "/var/lib/cloudflare-warp" 40000
-    fi
-
-    # start the daemon
-    sudo warp-svc --accept-tos > >(filter_warp_logs) 2>&1 &
-
-    # wait for the daemon to be ready
-    MAX_WAIT=${WARP_CONNECT_TIMEOUT:-30}
-    INTERVAL=2
-    ELAPSED=0
-
-    echo "Waiting for WARP daemon to be ready (max ${MAX_WAIT}s)..."
-    while [ $ELAPSED -lt $MAX_WAIT ]; do
-        if warp-cli status 2>/dev/null | grep -qE "(Status|Connected)"; then
-            echo "WARP daemon is ready after ${ELAPSED}s"
-            break
-        fi
-        sleep $INTERVAL
-        ELAPSED=$((ELAPSED + INTERVAL))
-    done
-
-    if [ $ELAPSED -ge $MAX_WAIT ]; then
-        echo "Warning: WARP daemon may not be fully ready after ${MAX_WAIT}s, continuing anyway..."
-    fi
-
-    if [ "$ZT_MODE" = true ]; then
-        # Zero Trust: warp-svc handles enrollment automatically via MDM config.
-        # MDM sets service_mode=proxy and proxy_port=40000; connect as safety net.
-        echo "Zero Trust mode: waiting for automatic enrollment via service token..."
-        warp-cli --accept-tos connect 2>/dev/null || true
-        echo "WARP Zero Trust proxy active on localhost:40000 (org: ${WARP_ORG})"
-    else
-        # register and apply license (tries all keys in order, stops on first success)
-        STORED_KEY_FILE="/var/lib/cloudflare-warp/.license_key"
-
-        apply_license_keys() {
-            local label=$1
-            for i in $(seq 0 $((NUM_KEYS - 1))); do
-                local key="${LICENSE_KEYS[$i]}"
-                echo "Trying license key $((i + 1))/${NUM_KEYS}..."
-                local out
-                out=$(warp-cli registration license "$key" 2>&1) && {
-                    echo "Warp license ${label} (key $((i + 1)))!"
-                    echo -n "$LICENSE_KEYS_CSV" | sudo tee "$STORED_KEY_FILE" > /dev/null
-                    return 0
-                } || {
-                    echo "Key $((i + 1)) failed: ${out}"
-                }
-            done
-            echo "All ${NUM_KEYS} license keys failed, running as free WARP"
-            return 1
-        }
-
-        if [ ! -f /var/lib/cloudflare-warp/reg.json ]; then
-            REG_OK=false
-            MAX_REG_ATTEMPTS=10
-            for attempt in $(seq 1 $MAX_REG_ATTEMPTS); do
-                REG_OUT=$(warp-cli registration new 2>&1) && {
-                    echo "Warp client registered!"
-                    REG_OK=true
-                    break
-                } || {
-                    # Exponential backoff with jitter: 2^attempt + random jitter, capped at 120s
-                    BACKOFF=$(( (1 << attempt) + RANDOM % (1 << attempt) ))
-                    [ "$BACKOFF" -gt 120 ] && BACKOFF=120
-                    echo "Registration attempt ${attempt}/${MAX_REG_ATTEMPTS} failed: ${REG_OUT} (retrying in ${BACKOFF}s)"
-                    sleep "$BACKOFF"
-                }
-            done
-            if [ "$REG_OK" = false ]; then
-                echo "Warning: registration failed after ${MAX_REG_ATTEMPTS} attempts, continuing without license..."
-            fi
-            if [ "$REG_OK" = true ] && [ "$NUM_KEYS" -gt 0 ]; then
-                apply_license_keys "registered" || true
-            fi
-        else
-            # Re-apply license if keys have changed since last registration
-            STORED_KEYS=""
-            [ -f "$STORED_KEY_FILE" ] && STORED_KEYS=$(sudo cat "$STORED_KEY_FILE" 2>/dev/null)
-            if [ "$NUM_KEYS" -gt 0 ] && [ "$LICENSE_KEYS_CSV" != "$STORED_KEYS" ]; then
-                echo "License key(s) changed, re-applying..."
-                apply_license_keys "updated" || true
-            fi
-        fi
-
-        # set proxy mode and connect
-        warp-cli --accept-tos mode proxy
-        warp-cli --accept-tos connect
-        echo "WARP proxy mode active on localhost:40000"
-    fi
-
-    # disable qlog
-    warp-cli --accept-tos debug qlog disable
-
-    # Build GOST arguments
-    GOST_LISTEN=":1080"
-    GOST_OPTS=""
-
-    if [ -n "$PROXY_USER" ] && [ -n "$PROXY_PASS" ]; then
-        GOST_LISTEN="${PROXY_USER}:${PROXY_PASS}@:1080"
-        echo "Proxy authentication enabled for user: ${PROXY_USER}"
-    fi
-
-    CLIMITER=${PROXY_MAX_CONN:-10}
-    RLIMITER=${PROXY_MAX_RPS:-50}
-    GOST_OPTS="climiter=${CLIMITER}&rlimiter=${RLIMITER}"
-
-    if [ -n "$PROXY_ALLOWED_IPS" ]; then
-        GOST_OPTS="${GOST_OPTS}&admission=~${PROXY_ALLOWED_IPS}"
-        echo "IP whitelist enabled: ${PROXY_ALLOWED_IPS}"
-    fi
-
-    # Build HTTP proxy listen addresses
-    HTTP_WARP_LISTEN=":8080"
-    HTTP_DIRECT_LISTEN=":8081"
-    if [ -n "$PROXY_USER" ] && [ -n "$PROXY_PASS" ]; then
-        HTTP_WARP_LISTEN="${PROXY_USER}:${PROXY_PASS}@:8080"
-        HTTP_DIRECT_LISTEN="${PROXY_USER}:${PROXY_PASS}@:8081"
-    fi
-
-    # Build direct proxy listen address
-    DIRECT_LISTEN=":1081"
-    if [ -n "$PROXY_USER" ] && [ -n "$PROXY_PASS" ]; then
-        DIRECT_LISTEN="${PROXY_USER}:${PROXY_PASS}@:1081"
-    fi
-
-    # Start direct proxies (SOCKS5 on 1081, HTTP on 8081) - bypass WARP
-    echo "Starting direct proxies on :1081 (SOCKS5) and :8081 (HTTP) -> Internet (no WARP)"
-    gost -L "socks5://${DIRECT_LISTEN}?${GOST_OPTS}" -L "http://${HTTP_DIRECT_LISTEN}?${GOST_OPTS}" &
-
-    # Start Shadowsocks servers (for mobile VPN clients)
-    # Use PROXY_PASS if set, otherwise default to 'cloudflare-warp'
-    SS_PASS=${PROXY_PASS:-cloudflare-warp}
-    SS_METHOD=${SS_METHOD:-chacha20-ietf-poly1305}
-
-    echo "Starting Shadowsocks servers:"
-    echo "  - WARP exit on :8388 (method: ${SS_METHOD})"
-    echo "  - Direct exit on :8389 (method: ${SS_METHOD})"
-
-    # Shadowsocks through WARP
-    gost -L "ss://${SS_METHOD}:${SS_PASS}@:8388?${GOST_OPTS}" -F socks5://127.0.0.1:40000 &
-
-    # Shadowsocks direct (bypass WARP)
-    gost -L "ss://${SS_METHOD}:${SS_PASS}@:8389?${GOST_OPTS}" &
-
-    # Generate connection info for mobile apps
-    echo ""
-    echo "=== Shadowsocks Connection Info ==="
-    echo "For mobile apps (Shadowsocks, Shadowrocket, v2rayNG):"
-    echo "  Server: <YOUR_SERVER_IP>"
-    echo "  Port (WARP): 8388"
-    echo "  Port (Direct): 8389"
-    if [ -n "$PROXY_PASS" ]; then
-        echo "  Password: <your PROXY_PASS>"
-    else
-        echo "  Password: cloudflare-warp"
-    fi
-    echo "  Method: ${SS_METHOD}"
-    echo "==================================="
-    echo ""
-
-    # Start WARP proxies (SOCKS5 on 1080, HTTP on 8080) - chain to WARP
-    echo "Starting WARP proxies on :1080 (SOCKS5) and :8080 (HTTP) -> WARP proxy"
-    gost -L "socks5://${GOST_LISTEN}?${GOST_OPTS}" -L "http://${HTTP_WARP_LISTEN}?${GOST_OPTS}" -F socks5://127.0.0.1:40000
-
-    # Unreachable — gost above runs in the foreground
-    exit 0
-fi
-
-# ==============================================================================
-# MULTI-INSTANCE MODE (WARP_INSTANCES > 1)
-#
-# Each warp-svc uses STATE_DIRECTORY and RUNTIME_DIRECTORY env vars
-# (systemd convention) to see its own data dir and IPC socket.
-# Current egress IPs are shared/dynamic Cloudflare addresses.
-#
-# No extra Docker capabilities required (no SYS_ADMIN).
+# MULTI-INSTANCE LIGHTWEIGHT MODE
 # ==============================================================================
 
 echo "========================================"
-echo " Multi-Instance WARP Mode"
-echo " Instances : ${WARP_INSTANCES}"
-if [ "$ZT_MODE" = true ]; then
-echo " Enrollment : Zero Trust (${WARP_ORG})"
-fi
+echo "  Multi-Instance WARP Lightweight Mode"
+echo "  Instances: ${WARP_INSTANCES}"
+echo "  Engine: wireproxy (wgcf + wireproxy)"
 if [ "$PROXY_MODE" = "dedicated" ]; then
-echo " Proxy mode : dedicated (1 port per instance, base: ${PROXY_BASE_PORT})"
+    echo "  Proxy mode: dedicated (1 port per instance, base: ${PROXY_BASE_PORT})"
 else
-echo " Proxy mode : round-robin"
-fi
-if [ "$NUM_KEYS" -gt 0 ]; then
-echo " License keys : ${NUM_KEYS} (auto-fallback)"
+    echo "  Proxy mode: round-robin"
 fi
 echo "========================================"
 echo ""
 
-write_op_state "running" "Starting ${WARP_INSTANCES} instances (${WARP_ENGINE:-official})..." 0 "$WARP_INSTANCES"
+write_op_state "running" "Starting ${WARP_INSTANCES} lightweight instances..." 0 "$WARP_INSTANCES"
 
-# ---- start each WARP instance with isolated paths ----
+# ---- start each wireproxy instance ----
 INSTANCE_PIDS=()
 for i in $(seq 0 $((WARP_INSTANCES - 1))); do
     PORT=$((40000 + i))
     write_op_state "running" "Starting instance $((i + 1))/${WARP_INSTANCES}..." "$((i + 1))" "$WARP_INSTANCES"
-    /start-warp-instance.sh \
-        "$i" "$PORT" "$LICENSE_KEYS_CSV" "${WARP_CONNECT_TIMEOUT:-30}" &
+
+    /start-wireproxy-instance.sh \
+        "$i" "$PORT" "" "${WARP_CONNECT_TIMEOUT:-30}" &
     INSTANCE_PIDS+=($!)
-    if [ "${WARP_ENGINE:-official}" = "wireproxy" ]; then
-        LW_DIR="${WARP_DATA_DIR:-/var/lib/cloudflare-warp}/lightweight/instance-${i}"
-        if [ ! -f "$LW_DIR/wgcf-profile.conf" ]; then
-            if [ "$i" -lt $((WARP_INSTANCES - 1)) ]; then
-                sleep "${LIGHTWEIGHT_REGISTRATION_DELAY:-10}"
-            fi
-        else
-            sleep 0.5
+
+    LW_DIR="${WARP_DATA_DIR:-/var/lib/cloudflare-warp}/lightweight/instance-${i}"
+    if [ ! -f "$LW_DIR/wgcf-profile.conf" ]; then
+        if [ "$i" -lt $((WARP_INSTANCES - 1)) ]; then
+            sleep "${LIGHTWEIGHT_REGISTRATION_DELAY:-10}"
         fi
     else
-        sleep $((5 + RANDOM % 5))  # stagger with jitter (5-9s) to avoid Cloudflare API rate-limiting
+        sleep 0.5
     fi
 done
+
 # ---- verify each instance is connected to WARP (parallel) ----
 write_op_state "running" "Verifying WARP instances..." "$WARP_INSTANCES" "$WARP_INSTANCES"
+
 echo ""
 echo "Verifying WARP instances (parallel)..."
+
 READY_COUNT=0
 MAX_VERIFY_WAIT=90
 VERIFY_DIR=$(mktemp -d)
 VERIFY_PIDS=()
+
 for i in $(seq 0 $((WARP_INSTANCES - 1))); do
-    PORT=$((40000 + i))
     (
+        PORT=$((40000 + i))
         WAIT=0
         while [ "$WAIT" -lt "$MAX_VERIFY_WAIT" ]; do
-            if curl --connect-timeout 4 --socks5-hostname "127.0.0.1:${PORT}"                 https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -qE 'warp=(on|plus)'; then
-                if [ "${WARP_ENGINE:-official}" = "wireproxy" ]; then
-                    IP6=$(curl -fsS --max-time 6 --socks5-hostname "127.0.0.1:${PORT}" https://api6.ipify.org 2>/dev/null || true)
-                    if [[ "$IP6" =~ : ]]; then
-                        echo "$IP6" > "${VERIFY_DIR}/${i}.ip6"
-                        echo "OK" > "${VERIFY_DIR}/${i}"
-                        exit 0
-                    fi
-                else
-                    echo "OK" > "${VERIFY_DIR}/${i}"
-                    exit 0
+            if curl --connect-timeout 4 --socks5-hostname "127.0.0.1:${PORT}" \
+                "https://cloudflare.com/cdn-cgi/trace" 2>/dev/null | grep -qE 'warp=(on|plus)'; then
+                IP6=$(curl -fsS --max-time 6 --socks5-hostname "127.0.0.1:${PORT}" \
+                    "https://api6.ipify.org" 2>/dev/null || true)
+                if [[ "$IP6" == *:* ]]; then
+                    echo "$IP6" > "${VERIFY_DIR}/${i}.ip6"
                 fi
+                echo "OK" > "${VERIFY_DIR}/${i}"
+                exit 0
             fi
             sleep 3
             WAIT=$((WAIT + 3))
@@ -397,7 +149,8 @@ for pid in "${VERIFY_PIDS[@]}"; do
     wait "$pid" 2>/dev/null || true
 done
 
-if [ "${WARP_ENGINE:-official}" = "wireproxy" ] && [ "${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-true}" = "true" ]; then
+# IPv6 uniqueness check
+if [ "${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-true}" = "true" ]; then
     declare -A SEEN_IP6
     for i in $(seq 0 $((WARP_INSTANCES - 1))); do
         if [ -f "${VERIFY_DIR}/${i}.ip6" ]; then
@@ -428,6 +181,7 @@ echo "${READY_COUNT}/${WARP_INSTANCES} WARP instances ready"
 if [ "$READY_COUNT" -eq 0 ]; then
     rm -rf "$VERIFY_DIR"
     write_op_state "error" "No WARP instances started successfully" 0 "$WARP_INSTANCES" "All instances failed to connect"
+
     if [ "${ADMIN_ENABLED:-false}" != "true" ]; then
         echo "Error: no WARP instances started successfully. Exiting."
         exit 1
@@ -437,7 +191,7 @@ else
     write_op_state "idle" "Ready (${READY_COUNT}/${WARP_INSTANCES} healthy)" "$READY_COUNT" "$WARP_INSTANCES"
 fi
 
-# ---- generate GOST config (dedicated: all instances; round-robin: verified instances) ----
+# ---- generate GOST config ----
 if [ "$PROXY_MODE" = "dedicated" ]; then
     generate_gost_config_dedicated "$VERIFY_DIR"
 else
@@ -454,21 +208,21 @@ if [ "$PROXY_MODE" = "dedicated" ]; then
         echo "  SOCKS5 instance $((i+1)) : :${DPORT} -> WARP $((i+1))"
     done
     echo "  ---"
-    echo "  SOCKS5 (Direct): :1081"
-    echo "  HTTP   (Direct): :8081"
-    echo "  SS     (Direct): :8389"
+    echo "  SOCKS5 (Direct) : :1081"
+    echo "  HTTP   (Direct) : :8081"
+    echo "  SS     (Direct) : :8389"
     if [ -n "$PROXY_USER" ]; then
         echo "  Auth: ${PROXY_USER}:***"
     fi
     echo "========================================================="
 else
     echo "=== Proxy Endpoints (round-robin across ${READY_COUNT} instances) ==="
-    echo "  SOCKS5 (WARP)  : :1080"
-    echo "  HTTP   (WARP)  : :8080"
-    echo "  SS     (WARP)  : :8388"
-    echo "  SOCKS5 (Direct): :1081"
-    echo "  HTTP   (Direct): :8081"
-    echo "  SS     (Direct): :8389"
+    echo "  SOCKS5 (WARP)   : :1080"
+    echo "  HTTP   (WARP)   : :8080"
+    echo "  SS     (WARP)   : :8388"
+    echo "  SOCKS5 (Direct) : :1081"
+    echo "  HTTP   (Direct) : :8081"
+    echo "  SS     (Direct) : :8389"
     if [ -n "$PROXY_USER" ]; then
         echo "  Auth: ${PROXY_USER}:***"
     fi
@@ -478,20 +232,17 @@ echo ""
 
 # ---- cleanup on shutdown ----
 cleanup() {
-    echo "Shutting down ${WARP_INSTANCES} WARP instances..."
+    echo "Shutting down ${WARP_INSTANCES} wireproxy instances..."
     for pid in "${INSTANCE_PIDS[@]}"; do
-        sudo kill "$pid" 2>/dev/null || true
+        kill "$pid" 2>/dev/null || true
     done
-    sudo pkill -f "warp-svc" 2>/dev/null || true
-    sudo pkill -f "dbus-daemon.*dbus-" 2>/dev/null || true
+    sudo pkill -f "wireproxy" 2>/dev/null || true
     kill "$ADMIN_PID" 2>/dev/null || true
     kill "$GOST_PID" 2>/dev/null || true
     kill "$WATCHDOG_PID" 2>/dev/null || true
     wait
 }
 trap cleanup SIGTERM SIGINT
-
-# ---- start optional admin panel ----
 
 # ---- start watchdog (multi-instance only) ----
 WATCHDOG_PID=""
@@ -503,14 +254,13 @@ elif [ "$WARP_INSTANCES" -gt 1 ]; then
     echo "Watchdog disabled (WARP_WATCHDOG_ENABLED=false)"
 fi
 
-# Admin panel started at container launch if ADMIN_ENABLED=true
-
 # ---- start GOST (foreground keeps container alive) ----
 if [ "$PROXY_MODE" = "dedicated" ]; then
     echo "Starting GOST proxy (dedicated mode, ${READY_COUNT} instances)..."
 else
     echo "Starting GOST proxy (round-robin across ${READY_COUNT} instances)..."
 fi
+
 while true; do
     gost -C /tmp/gost-config.yaml &
     GOST_PID=$!

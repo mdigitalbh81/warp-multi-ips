@@ -3,7 +3,7 @@ import http.client
 import importlib.util
 import json
 import os
-import re
+import shutil
 import socket
 import tempfile
 import threading
@@ -34,14 +34,10 @@ def load_server_module(tmpdir, env_overrides=None):
     }
     if env_overrides:
         env.update(env_overrides)
-
     old_env = os.environ.copy()
     os.environ.update(env)
     try:
-        spec = importlib.util.spec_from_file_location(
-            f"admin_server_{tmpdir.name}_{time.time_ns()}",
-            ROOT / "admin" / "server.py",
-        )
+        spec = importlib.util.spec_from_file_location(f"admin_server_{tmpdir.name}_{time.time_ns()}", ROOT / "admin" / "server.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod
@@ -57,27 +53,22 @@ class AdminFrontendOperationsTests(unittest.TestCase):
         self.config_file = self.tmp / "admin-config.json"
         self.creds_file = self.tmp / "admin-credentials.json"
         self.env_file = self.tmp / "warp-admin-env"
-        self.server_mod = load_server_module(self.tmp)
 
+        self.server_mod = load_server_module(self.tmp)
         self.server_mod.CONFIG_FILE = self.config_file
         self.server_mod.CREDENTIALS_FILE = self.creds_file
         self.server_mod.ENV_FILE = self.env_file
         self.server_mod.WARP_DATA_DIR = self.tmp
 
-        # Initialize config & credentials
-        self.config_file.write_text(
-            json.dumps(
-                {
-                    "instances": 2,
-                    "proxy_mode": "dedicated",
-                    "proxy_base_port": 2080,
-                    "proxy_host_omniroute": "omniroute_warp-proxy",
-                    "warp_engine": "wireproxy",
-                    "lightweight_egress_family": "ipv6",
-                    "lightweight_require_unique_egress": True,
-                }
-            )
-        )
+        # Initialize config and credentials
+        self.config_file.write_text(json.dumps({
+            "instances": 2,
+            "proxy_mode": "dedicated",
+            "proxy_base_port": 2080,
+            "proxy_host_omniroute": "omniroute_warp-proxy",
+            "lightweight_egress_family": "ipv6",
+            "lightweight_require_unique_egress": True,
+        }))
         self.server_mod.ensure_admin_credentials()
 
         self.port = get_free_port()
@@ -116,7 +107,6 @@ class AdminFrontendOperationsTests(unittest.TestCase):
         self.assertIn("<title>WARP Multi IPs</title>", html)
         self.assertIn("OmniRoute Export", html)
         self.assertIn("Diagnostics & Status", html)
-        self.assertIn("warp_engine", html)
         self.assertIn("proxy_host_omniroute", html)
 
     def test_static_assets_app_js_and_style_css_served(self):
@@ -153,6 +143,7 @@ class AdminFrontendOperationsTests(unittest.TestCase):
         status, _, data = self.request("GET", "/api/status", {"Authorization": self.auth_header})
         self.assertEqual(status, 200)
         resp = json.loads(data.decode("utf-8"))
+        self.assertEqual(resp["mode"], "lightweight")
         self.assertEqual(resp["engine"], "wireproxy")
         self.assertEqual(resp["configured_instances"], 2)
         self.assertEqual(resp["proxy_mode"], "dedicated")
@@ -167,7 +158,7 @@ class AdminFrontendOperationsTests(unittest.TestCase):
         self.assertEqual(len(instances), 2)
         inst0 = instances[0]
         self.assertIn("instance", inst0)
-        self.assertIn("engine", inst0)
+        self.assertEqual(inst0["engine"], "wireproxy")
         self.assertIn("proxy_port", inst0)
         self.assertIn("internal_port", inst0)
         self.assertIn("proxy_host_omniroute", inst0)
@@ -206,16 +197,7 @@ class AdminFrontendOperationsTests(unittest.TestCase):
             self.assertNotIn("password", str(item))
             self.assertNotIn("token", str(item))
 
-    def test_reprovision_wireproxy_vs_official_endpoints(self):
-        # Official engine should reject reprovision with 400
-        self.config_file.write_text(json.dumps({"instances": 2, "warp_engine": "official"}))
-        status, _, data = self.request("POST", "/api/instances/1/reprovision", {"Authorization": self.auth_header}, body="{}")
-        self.assertEqual(status, 400)
-        resp = json.loads(data.decode("utf-8"))
-        self.assertIn("only supported for wireproxy", resp["error"].lower())
-
-        # Wireproxy engine endpoint routes to manual_reprovision_instance
-        self.config_file.write_text(json.dumps({"instances": 2, "warp_engine": "wireproxy"}))
+    def test_reprovision_endpoint(self):
         original_reprov = self.server_mod.manual_reprovision_instance
         self.server_mod.manual_reprovision_instance = lambda idx: ({"ok": True, "message": f"instance {idx+1} reprovisioned"}, 200)
         try:
@@ -226,18 +208,12 @@ class AdminFrontendOperationsTests(unittest.TestCase):
         finally:
             self.server_mod.manual_reprovision_instance = original_reprov
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     def test_settings_persistence_across_restart(self):
-        # Update config via POST /api/config
         payload = {
             "instances": 3,
             "proxy_mode": "dedicated",
             "proxy_base_port": 2080,
             "proxy_host_omniroute": "omniroute_custom_host",
-            "warp_engine": "wireproxy",
             "lightweight_egress_family": "ipv6",
             "lightweight_require_unique_egress": True,
             "proxy_max_rps": 60,
@@ -246,7 +222,7 @@ if __name__ == "__main__":
             "proxy_auth_enabled": False,
             "proxy_user": "",
         }
-        # Mock reload_gost and refresh_all to avoid host missing binaries
+
         orig_reload = self.server_mod.reload_gost
         orig_refresh = self.server_mod.refresh_all
         orig_start = self.server_mod.start_instance
@@ -255,32 +231,23 @@ if __name__ == "__main__":
         self.server_mod.refresh_all = lambda force=False: []
         self.server_mod.start_instance = lambda idx, cfg: None
         self.server_mod.wait_internal = lambda idx, timeout: True
+
         try:
-            status, _, data = self.request(
-                "POST",
-                "/api/config",
-                {"Authorization": self.auth_header},
-                body=json.dumps(payload),
-            )
+            status, _, data = self.request("POST", "/api/config", {"Authorization": self.auth_header}, body=json.dumps(payload))
             self.assertEqual(status, 200)
             resp = json.loads(data.decode("utf-8"))
             self.assertTrue(resp["ok"])
             self.assertEqual(resp["config"]["instances"], 3)
             self.assertEqual(resp["config"]["proxy_host_omniroute"], "omniroute_custom_host")
-            self.assertEqual(resp["config"]["warp_engine"], "wireproxy")
 
-            # Check persisted file on disk
             persisted = json.loads(self.config_file.read_text())
             self.assertEqual(persisted["instances"], 3)
             self.assertEqual(persisted["proxy_host_omniroute"], "omniroute_custom_host")
-            self.assertEqual(persisted["warp_engine"], "wireproxy")
 
-            # Spin up a new server instance from same persisted files (simulating container restart)
             new_server_mod = load_server_module(self.tmp)
             new_cfg = new_server_mod.get_config()
             self.assertEqual(new_cfg["instances"], 3)
             self.assertEqual(new_cfg["proxy_host_omniroute"], "omniroute_custom_host")
-            self.assertEqual(new_cfg["warp_engine"], "wireproxy")
             self.assertEqual(new_cfg["proxy_max_rps"], 60)
             self.assertEqual(new_cfg["warp_connect_timeout"], 40)
             self.assertEqual(new_cfg["auto_refresh_interval"], 90)
@@ -295,25 +262,28 @@ if __name__ == "__main__":
         app_js = (ROOT / "admin/static/app.js").read_text()
         style_css = (ROOT / "admin/static/style.css").read_text()
 
-        # Engine selector in settings form
-        self.assertIn('<select name="warp_engine">', index_html)
-        self.assertIn('<option value="official">', index_html)
-        self.assertIn('<option value="wireproxy">', index_html)
-
         # OmniRoute Host in settings form
         self.assertIn('<input name="proxy_host_omniroute"', index_html)
 
-        # OmniRoute Export UI section & buttons
+        # OmniRoute Export section and buttons
         self.assertIn('id="omnirouteExportSection"', index_html)
         self.assertIn('id="sectionExportCopy"', index_html)
         self.assertIn('id="sectionExportDownload"', index_html)
         self.assertIn('id="sectionExportText"', index_html)
 
-        # 12 columns in table headers
+        # 11 columns in table headers
         headers = [
-            "Instance", "Engine", "OmniRoute Proxy", "Current Egress IP",
-            "Previous IPv6", "Unique", "Country", "Colo", "Notes", "WARP",
-            "Health", "Actions"
+            "Instance",
+            "OmniRoute Proxy",
+            "Current Egress IP",
+            "Previous IPv6",
+            "Unique",
+            "Country",
+            "Colo",
+            "Notes",
+            "WARP",
+            "Health",
+            "Actions",
         ]
         for h in headers:
             self.assertIn(h, index_html)
@@ -331,3 +301,7 @@ if __name__ == "__main__":
         self.assertIn(".omniroute-textarea", style_css)
         self.assertIn(".diagnostics-section", style_css)
         self.assertIn(".diag-grid", style_css)
+
+
+if __name__ == "__main__":
+    unittest.main()

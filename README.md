@@ -1,18 +1,16 @@
-# WARP Multi IPs
+# Cloudflare WARP Multi-IP Lightweight Proxy
 
 [![Build](https://img.shields.io/github/actions/workflow/status/mdigitalbh81/warp-multi-ips/build-test-push.yml?logo=github&label=Build)](https://github.com/mdigitalbh81/warp-multi-ips/actions)
 [![GitHub Stars](https://img.shields.io/github/stars/mdigitalbh81/warp-multi-ips?logo=github&label=Stars)](https://github.com/mdigitalbh81/warp-multi-ips)
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-blue.svg)](LICENSE)
 
 ## Attribution
+This project is derived from [https://github.com/ErcinDedeoglu/cloudflare-warp](https://github.com/ErcinDedeoglu/cloudflare-warp) by Ercin Dedeoglu and contributors, licensed under CC BY-NC 4.0. Non-commercial use only.
 
-This project is derived from [https://github.com/ErcinDedeoglu/cloudflare-warp](https://github.com/ErcinDedeoglu/cloudflare-warp).
+This fork implements an ultra-lightweight, multi-instance Cloudflare WARP architecture powered by `wireproxy` userspace engine, `wgcf`, and `GOST`. It delivers guaranteed unique IPv6 egress routing, high concurrency, and low memory consumption for OmniRoute, web scrapers, and automation workloads.
 
-Original project by Ercin Dedeoglu and contributors. This fork adds dedicated per-instance proxy ports while preserving the original CC BY-NC 4.0 license. Non-commercial use only.
-
-Upstream project: [ErcinDedeoglu/cloudflare-warp](https://github.com/ErcinDedeoglu/cloudflare-warp). The upstream Docker image `dublok/cloudflare-warp:latest` belongs to the original project and may not include the changes from this fork.
-
-Run [Cloudflare WARP](https://1.1.1.1/) in Docker. Provides SOCKS5 and HTTP proxies that route traffic through Cloudflare's network. Supports multiple WARP instances in a single container for IP rotation.
+> **Historical Note:**
+> Older versions used the official Cloudflare WARP daemon (`warp-svc`) per instance. This was replaced by a lightweight `wireproxy` architecture due to resource usage (~5.8MB PSS vs ~104MB PSS per instance).
 
 ## Quick Start
 
@@ -24,8 +22,15 @@ services:
     container_name: warp
     restart: always
     ports:
-      - "1080:1080"  # SOCKS5 proxy
-      # - "8080:8080"  # HTTP proxy
+      - "2080-2089:2080-2089"  # Dedicated SOCKS5 proxy ports (instances 1-10)
+      - "9090:9090"            # Web Admin Dashboard & API
+    environment:
+      - WARP_INSTANCES=10
+      - PROXY_MODE=dedicated
+      - PROXY_BASE_PORT=2080
+      - ADMIN_ENABLED=true
+      - ADMIN_PASSWORD=your-secure-admin-password
+      - PROXY_HOST_OMNIROUTE=omniroute_warp-proxy
     volumes:
       - warp-data:/var/lib/cloudflare-warp
 
@@ -36,170 +41,78 @@ volumes:
 ```bash
 docker compose up -d
 
-# Test SOCKS5 proxy
-curl --socks5-hostname 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace
+# Test SOCKS5 proxy on instance 1 (port 2080)
+curl --socks5-hostname 127.0.0.1:2080 https://cloudflare.com/cdn-cgi/trace
 
-# Test HTTP proxy (if port 8080 exposed)
-curl -x http://127.0.0.1:8080 https://cloudflare.com/cdn-cgi/trace
+# Verify unique IPv6 egress
+curl --socks5-hostname 127.0.0.1:2080 https://api6.ipify.org
 ```
 
-If working, you'll see `warp=on` in the output.
+When working, you will see `warp=on` and distinct public IPv6 addresses on each dedicated port.
+
+## Architecture
+
+```text
+OmniRoute / Downstream Clients
+            │
+            ▼
+    GOST Proxy Router (Ports 2080..2089 or 1080)
+            │
+            ▼
+    wireproxy instances (127.0.0.1:40000..40009)
+            │
+            ▼ (WireGuard WireProxy Userspace Tunnel via wgcf)
+    Cloudflare WARP Edge
+            │
+            ▼
+    Unique IPv6 Egress per Instance (2a09:bac5:...)
+```
+
+### Core Benefits
+
+1. **Ultra-Low Memory Footprint (PSS):** Consumes ~5.8 MB PSS per instance (~58 MB PSS for 10 instances), compared to ~104 MB PSS per instance (>1 GB for 10 instances) under the legacy `warp-svc` daemon.
+2. **Unique IPv6 Egress Guarantee:** Cloudflare assigns distinct IPv6 addresses to separate device registrations. Each instance egress is verified against `https://api6.ipify.org` and monitored continuously by the watchdog.
+3. **Zero-Touch Deployment:** Deploy directly with Dokploy, EasyPanel, or Docker Compose without configuring engine flags or manual registration.
+4. **Deterministic Dedicated Ports:** In `dedicated` mode, each port (`PROXY_BASE_PORT + N`) maps to its own wireproxy tunnel instance.
+5. **OmniRoute Integration:** Built-in dashboard and `/api/export/omniroute` endpoint to copy or export proxy lists instantly.
+6. **Persistent State & Identities:** Registrations, WireGuard profiles, admin credentials, and notes are stored in `/var/lib/cloudflare-warp` and preserved across restarts.
 
 ## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `WARP_INSTANCES` | Number of WARP instances. Current egress IPs are shared/dynamic Cloudflare addresses; dedicated mode guarantees port-to-instance mapping, not permanent IP assignment. No extra capabilities required | `1` |
-| `PROXY_MODE` | Proxy mode: `round-robin` (shared ports, IP rotation) or `dedicated` (one SOCKS5 port per instance) | `round-robin` |
+| `WARP_INSTANCES` | Number of WARP instances to run | `10` |
+| `PROXY_MODE` | Proxy mode: `dedicated` (one port per instance) or `round-robin` (shared port 1080) | `dedicated` |
 | `PROXY_BASE_PORT` | Base port for dedicated mode. Instance N listens on `PROXY_BASE_PORT + N`. Ignored in round-robin mode | `2080` |
 | `PROXY_HOST_OMNIROUTE` | Host or IP that OmniRoute uses to reach the SOCKS5 proxy ports (e.g. `10.0.0.254`, `proxy.example.com`). Displayed in the admin dashboard as OmniRoute Proxy. Does not change proxy binding | - |
 | `PROXY_HOST` | **Deprecated.** Fallback for `PROXY_HOST_OMNIROUTE` when the new variable is not set | - |
-| `WARP_LICENSE_KEY` | WARP+ license key. Comma-separated for multiple keys — tries each in order, skips any that fail | - |
-| `WARP_ORG` | Zero Trust team name. Enables automatic enrollment via service token (see [Zero Trust](#zero-trust-free-warp-routing) section). Mutually exclusive with `WARP_LICENSE_KEY` | - |
-| `WARP_AUTH_CLIENT_ID` | Service token Client ID (required when `WARP_ORG` is set) | - |
-| `WARP_AUTH_CLIENT_SECRET` | Service token Client Secret (required when `WARP_ORG` is set) | - |
-| `WARP_CONNECT_TIMEOUT` | Max seconds to wait for WARP daemon | `30` |
+| `LIGHTWEIGHT_EGRESS_FAMILY` | Egress address family: `ipv6` (recommended), `ipv4`, or `auto` | `ipv6` |
+| `LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS` | Require unique IPv6 egress per wireproxy instance; flags collisions as degraded | `true` |
+| `LIGHTWEIGHT_REGISTRATION_DELAY` | Stagger delay (seconds) between initial `wgcf` device registrations | `2` |
+| `LIGHTWEIGHT_EGRESS_CHECK_INTERVAL` | Periodic interval (seconds) for watchdog IPv6 egress validation | `60` |
+| `WARP_CONNECT_TIMEOUT` | Max seconds to wait for wireproxy instance initialization | `30` |
+| `WARP_LICENSE_KEY` | Optional WARP+ license key(s). Comma-separated for multiple keys | - |
 | `PROXY_USER` | Proxy authentication username | - |
 | `PROXY_PASS` | Proxy authentication password | - |
 | `PROXY_ALLOWED_IPS` | IP whitelist (comma-separated CIDRs) | - |
-| `PROXY_MAX_CONN` | Max concurrent connections per IP | `10` |
+| `PROXY_MAX_CONN` | Max concurrent connections per IP | `200` |
 | `PROXY_MAX_RPS` | Max requests per second per IP | `50` |
 | `SS_METHOD` | Shadowsocks encryption method | `chacha20-ietf-poly1305` |
 | `ADMIN_ENABLED` | Enable the protected web admin panel. When enabled for the first time, it imports env values into persistent admin config | `false` |
 | `ADMIN_PORT` | Admin panel port inside the container. Publish it explicitly in Compose only when needed | `9090` |
 | `ADMIN_USER` | Initial admin panel username. Used only to create persistent credentials on first startup | `admin` |
 | `ADMIN_PASSWORD` | Admin panel password. Required when `ADMIN_ENABLED=true` | - |
-| `ADMIN_MAX_INSTANCES` | Safety limit for instance count changes from the panel | `200` |
+| `ADMIN_MAX_INSTANCES` | Safety limit for instance count changes from the panel | `45` |
 | `AUTO_REFRESH_INTERVAL` | Seconds between cached Current Egress IP refreshes | `60` |
-
-
-## WARP Engines
-
-This project supports two execution engines selectable via `WARP_ENGINE`:
-
-| Feature | Official Engine (`WARP_ENGINE=official`) | Lightweight Engine (`WARP_ENGINE=wireproxy`) |
-|---------|------------------------------------------|----------------------------------------------|
-| **Core Daemon** | Cloudflare `warp-svc` (per-instance) + D-Bus | Userspace `wireproxy 1.1.3` + `wgcf 2.2.32` |
-| **Memory Footprint (PSS)** | ~104 MB PSS per instance (~1040 MB for 10) | ~5.8 MB PSS per instance (~58 MB for 10) |
-| **RSS Footprint** | ~120 MB RSS per instance | ~13 MB RSS per instance |
-| **Egress Identification** | IPv4 / IPv6 dynamic Cloudflare egress | **Unique IPv6 egress per instance** |
-| **Identity Persistence** | `/var/lib/cloudflare-warp/instance-N/` | `/var/lib/cloudflare-warp/lightweight/instance-N/` |
-| **License / Zero Trust** | Supported (WARP+, Teams, mTLS) | Supported via wgcf registration & license key |
-| **Best Used For** | Standard setups, Zero Trust org enrollment | High instance counts, memory-constrained VPS, strict unique IPv6 egress |
-
-> **Benchmark Notice:** The figures above (~104MB vs ~5.8MB PSS) were measured in validated test environments. Exact memory usage depends on workload, concurrency, and architecture.
-
-### Lightweight Engine Architecture & IPv6 Egress
-
-When running `WARP_ENGINE=wireproxy`:
-1. **Identity & Persistence:** Each instance gets a persistent `wgcf` registration in `/var/lib/cloudflare-warp/lightweight/instance-N/` (`wgcf-account.toml` and `wgcf-profile.conf`). Existing profiles are reused across restarts without re-registering.
-2. **Internal SOCKS5:** Each instance runs a lightweight `wireproxy` daemon exposing an internal listener on `127.0.0.1:40000+N`.
-3. **External GOST Proxy:** GOST listens on external ports (e.g. `2080+N` in dedicated mode) and proxies traffic into the internal wireproxy SOCKS5 port.
-4. **IPv6 Egress Uniqueness:** Cloudflare WARP shares public IPv4 addresses across users and instances, frequently leading to IPv4 egress collisions. However, independent Cloudflare WARP device registrations are assigned **distinct public IPv6 addresses**. The lightweight engine verifies and tracks the IPv6 egress of each instance (`https://api6.ipify.org`). If an IPv6 collision occurs, the colliding instance is marked `degraded`, ensuring downstream consumers like OmniRoute only route through verified unique IPs.
-
-### Lightweight Engine Configuration
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `WARP_ENGINE` | Engine selection: `official` or `wireproxy` | `official` |
-| `LIGHTWEIGHT_EGRESS_FAMILY` | Egress address family: `ipv6` (recommended), `ipv4`, or `auto` | `ipv6` |
-| `LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS` | Require unique IPv6 egress per wireproxy instance | `true` |
-| `LIGHTWEIGHT_REGISTRATION_DELAY` | Stagger delay (seconds) between initial `wgcf` device registrations | `2` |
-| `LIGHTWEIGHT_EGRESS_CHECK_INTERVAL` | Periodic interval (seconds) for watchdog IPv6 egress validation | `60` |
-
-### Reprovisioning Identities
-
-In the admin panel, wireproxy instances include a **Reprovision** button (`POST /api/instances/{id}/reprovision`). Reprovisioning safely removes the existing `wgcf` registration, generates a fresh Cloudflare device identity and WireGuard profile, and restarts the wireproxy process.
-
-## With Authentication
-
-```yaml
-services:
-  warp:
-    build:
-      context: .
-    ports:
-      - "1080:1080"  # SOCKS5 proxy
-      - "8080:8080"  # HTTP proxy
-    environment:
-      - PROXY_USER=myuser
-      - PROXY_PASS=mypassword
-    volumes:
-      - warp-data:/var/lib/cloudflare-warp
-
-volumes:
-  warp-data:
-```
-
-```bash
-# SOCKS5 with auth
-curl --socks5-hostname myuser:mypassword@127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace
-
-# HTTP with auth
-curl -x http://myuser:mypassword@127.0.0.1:8080 https://cloudflare.com/cdn-cgi/trace
-```
-
-## Direct Proxy (Bypass WARP)
-
-Direct proxies are always available that exit through Docker's network without routing through WARP. Useful when you need your real IP for certain services.
-
-| Port | Protocol | Route |
-|------|----------|-------|
-| 1080 | SOCKS5 | Through WARP (Cloudflare IP) |
-| 1081 | SOCKS5 | Direct (real IP) |
-| 8080 | HTTP | Through WARP (Cloudflare IP) |
-| 8081 | HTTP | Direct (real IP) |
-
-```yaml
-services:
-  warp:
-    build:
-      context: .
-    ports:
-      - "1080:1080"  # SOCKS5 WARP proxy
-      - "1081:1081"  # SOCKS5 Direct proxy
-      - "8080:8080"  # HTTP WARP proxy
-      - "8081:8081"  # HTTP Direct proxy
-    environment:
-      - PROXY_USER=myuser
-      - PROXY_PASS=mypassword
-    volumes:
-      - warp-data:/var/lib/cloudflare-warp
-
-volumes:
-  warp-data:
-```
-
-```bash
-# SOCKS5 through WARP (Cloudflare IP)
-curl --socks5-hostname myuser:mypassword@127.0.0.1:1080 https://ifconfig.me
-
-# SOCKS5 direct exit (your real IP)
-curl --socks5-hostname myuser:mypassword@127.0.0.1:1081 https://ifconfig.me
-
-# HTTP through WARP (Cloudflare IP)
-curl -x http://myuser:mypassword@127.0.0.1:8080 https://ifconfig.me
-
-# HTTP direct exit (your real IP)
-curl -x http://myuser:mypassword@127.0.0.1:8081 https://ifconfig.me
-```
-
-## Multi-Instance (IP Rotation / Round-Robin)
-
-Set `WARP_INSTANCES=N` to run multiple WARP daemons in a single container. Current egress IPs are shared and dynamic Cloudflare addresses. By default (`PROXY_MODE=round-robin`), traffic is round-robined across all instances on the same ports — no extra capabilities required.
-
-```yaml
-environment:
-  - WARP_INSTANCES=10    # each request exits through a different IP
-```
-
-Each instance uses ~50-100 MB RAM and starts 2 seconds apart. If an instance fails, GOST skips it after 3 failures and retries after 30s.
+| `WARP_WATCHDOG_ENABLED` | Enable background health watchdog | `true` |
+| `WARP_WATCHDOG_INTERVAL` | Interval between health checks (seconds) | `30` |
+| `WARP_WATCHDOG_FAILURE_THRESHOLD` | Consecutive failures before marking degraded / recovering | `3` |
+| `WARP_WATCHDOG_RECOVERY_TIMEOUT` | Max seconds to wait for recovery | `30` |
+| `WARP_WATCHDOG_RESTART_COOLDOWN` | Cooldown period between restarts (seconds) | `120` |
 
 ## Dedicated Proxy Mode (1 Port per Instance)
 
-WARP egress addresses are Cloudflare shared/dynamic IPs. Dedicated mode guarantees a stable mapping from a SOCKS5 port to a specific local WARP instance; it does not guarantee a static or exclusive public IP.
-
-Set `PROXY_MODE=dedicated` to expose each WARP instance on its own SOCKS5 port. Every port is deterministically bound to one WARP instance — no round-robin, no IP rotation. Useful when you need to register each proxy independently in another system.
+Set `PROXY_MODE=dedicated` to expose each WARP instance on its own dedicated SOCKS5 port. Every port is deterministically bound to one WARP instance.
 
 ```yaml
 services:
@@ -207,113 +120,51 @@ services:
     build:
       context: .
     ports:
-      - "2080-2082:2080-2082"   # dedicated SOCKS5 ports
-      # - "1081:1081"           # direct proxy (always available)
+      - "2080-2089:2080-2089"   # dedicated SOCKS5 ports (10 instances)
+      - "9090:9090"             # admin panel
     environment:
-      - WARP_INSTANCES=3
-      - PROXY_MODE=dedicated
-      - PROXY_BASE_PORT=2080
-    volumes:
-      - warp-data:/var/lib/cloudflare-warp
-
-volumes:
-  warp-data:
-```
-
-This produces:
-
-```text
-port 2080 -> WARP instance 1 -> Current Egress IP A
-port 2081 -> WARP instance 2 -> Current Egress IP B
-port 2082 -> WARP instance 3 -> Current Egress IP C
-```
-
-With 10 instances:
-
-```yaml
-environment:
-  - WARP_INSTANCES=10
-  - PROXY_MODE=dedicated
-  - PROXY_BASE_PORT=2080
-```
-
-Generates ports 2080-2089, each bound to a single WARP instance.
-
-### Verifying Dedicated Mode
-
-Test each port individually:
-
-```bash
-curl --proxy socks5h://127.0.0.1:2080 https://www.cloudflare.com/cdn-cgi/trace
-curl --proxy socks5h://127.0.0.1:2081 https://www.cloudflare.com/cdn-cgi/trace
-curl --proxy socks5h://127.0.0.1:2082 https://www.cloudflare.com/cdn-cgi/trace
-```
-
-Or use the included test script to check all ports at once:
-
-```bash
-./scripts/test-dedicated.sh 3 2080
-```
-
-Each port should consistently route to the same WARP instance. Two instances may receive the same Cloudflare exit IP, and an instance's Current Egress IP can change over time — this is normal Cloudflare behavior, not an implementation bug. What matters is that each dedicated port is locked to its own WARP instance.
-
-### Notes on Dedicated Mode
-
-- Direct proxies (SOCKS5 `:1081`, HTTP `:8081`, SS `:8389`) remain available and bypass WARP regardless of mode.
-- HTTP and Shadowsocks WARP proxies (`:8080`, `:8388`) are **not** created in dedicated mode — only SOCKS5 per-instance listeners are generated. Use the SOCKS5 port for each instance.
-- Proxy authentication (`PROXY_USER`/`PROXY_PASS`) applies to all dedicated ports.
-- Port conflicts with fixed service ports (1081, 8080, 8081, 8388, 8389) are detected at startup.
-
-## Web Admin Panel
-
-The admin panel is disabled by default and listens on a separate port only when explicitly enabled. It provides a dashboard, Current Egress IP refresh, settings, proxy authentication controls, and a small JSON API.
-
-`ADMIN_ENABLED=true` requires `ADMIN_PASSWORD` on first startup. The panel will not start with an implicit `admin/admin` password.
-
-```yaml
-services:
-  warp:
-    build:
-      context: .
-    ports:
-      - "2080-2089:2080-2089"
-      - "9090:9090"
-    environment:
-      - ADMIN_ENABLED=true
-      - ADMIN_PORT=9090
-      - ADMIN_USER=admin
-      - ADMIN_PASSWORD=change-me
       - WARP_INSTANCES=10
       - PROXY_MODE=dedicated
       - PROXY_BASE_PORT=2080
     volumes:
       - warp-data:/var/lib/cloudflare-warp
+
+volumes:
+  warp-data:
 ```
 
-Configuration precedence when `ADMIN_ENABLED=true`:
+Port mapping:
+`port 2080 -> WARP instance 1 -> Unique IPv6 Egress A`
+`port 2081 -> WARP instance 2 -> Unique IPv6 Egress B`
+`...`
+`port 2089 -> WARP instance 10 -> Unique IPv6 Egress J`
 
-1. On first startup, `/var/lib/cloudflare-warp/admin-config.json` is created from environment variables such as `WARP_INSTANCES`, `PROXY_MODE`, `PROXY_BASE_PORT`, `PROXY_MAX_RPS`, `WARP_CONNECT_TIMEOUT`, `AUTO_REFRESH_INTERVAL`, `PROXY_USER`, and `PROXY_PASS`.
-2. On first startup, `/var/lib/cloudflare-warp/admin-credentials.json` is created from `ADMIN_USER` and `ADMIN_PASSWORD`. Only a salted PBKDF2 password hash is stored.
-3. After those files exist, the persistent admin config and persistent admin credentials are the primary source. Changing the admin username or password in Settings survives container restarts.
-4. Environment variables still configure startup-only options that are not managed by the panel, such as WARP license or Zero Trust enrollment.
+### Verifying Dedicated Proxies
 
-The panel does not edit container environment variables at runtime. Increasing instances starts only the new WARP instance processes and regenerates the GOST config. Reducing instances stops only the removed WARP processes and keeps their persisted data for later reuse. Because a stable GOST config reload path is not used here, the panel restarts only the GOST process after config changes; existing `warp-svc` processes are left running.
+```bash
+./scripts/test-dedicated.sh 10 2080
+```
 
-The panel uses HTTP Basic Authentication. After changing credentials, the old password is rejected immediately by the backend. Some browsers cache Basic Authentication credentials until the tab/browser is closed or a new login challenge is forced; that cache does not mean the old password remains valid on the server.
+## Web Admin Panel
 
-### Instance Notes
+The admin dashboard is available on port 9090 (`ADMIN_ENABLED=true`). It displays:
 
-Each instance supports a free-text note (up to 500 characters). Notes are stored in `instance-notes.json` on the persistent volume, keyed by 0-based instance index. They survive container restarts, egress IP changes, and `WARP_INSTANCES` scaling. When instances are removed and later re-added, previously saved notes for those indices are preserved.
+- **Instances Overview Table:** 11 detailed columns:
+  1. Instance Index
+  2. OmniRoute Proxy
+  3. Current Egress IP
+  4. Previous IPv6
+  5. Unique status badge
+  6. Country
+  7. Cloudflare Colo (e.g. GRU)
+  8. Editable Notes
+  9. WARP Status
+  10. Health Status
+  11. Actions (Restart / Reprovision)
+- **OmniRoute Export Panel:** Ready-to-copy or downloadable proxy list for OmniRoute configuration.
+- **Runtime Management:** Dynamic scaling, egress family selector (`ipv6`, `ipv4`, `auto`), and live health monitoring.
 
-Security notes before publishing the admin panel:
-
-- Do not publish the admin panel directly over plain HTTP. Use HTTPS through a reverse proxy.
-- Prefer an additional access layer such as an IP allowlist, VPN, or Cloudflare Access.
-- Exposing `ADMIN_PORT` directly to the Internet is not recommended.
-- The panel applies temporary per-IP rate limiting to failed administrator authentication attempts and returns `429` while an IP is blocked.
-- API responses intentionally omit administrator secrets and proxy passwords. Runtime config files may still contain secrets that the services need in order to run.
-
-Admin API:
+### Admin API Endpoints
 
 ```text
 GET  /api/status
@@ -323,98 +174,20 @@ POST /api/config
 POST /api/admin/credentials
 POST /api/refresh
 POST /api/instances/refresh
+POST /api/instances/{id}/restart
+POST /api/instances/{id}/reprovision
 PATCH /api/instances/{id}/note
+GET  /api/export/omniroute
 GET  /health
 ```
 
-The dashboard labels WARP exits as `Current Egress IP` because Cloudflare WARP IPs are shared and dynamic. The guaranteed association in dedicated mode is `port -> WARP instance`.
+## Direct Proxy (Bypass WARP)
 
-## IP Terminology
-
-The admin dashboard and API expose several address fields. Each serves a different purpose:
-
-| Term | Meaning |
-|------|---------|
-| **OmniRoute Proxy Host / OmniRoute Proxy Address** | The host and port that OmniRoute uses to connect to each SOCKS5 instance. Set via `PROXY_HOST_OMNIROUTE` (or the deprecated `PROXY_HOST`) and `PROXY_BASE_PORT`. Example: `10.0.0.254:2080`. This is the address you configure in OmniRoute, browsers, or downstream services |
-| **Container IP** | The IPv4 address(es) of the Docker container's network interfaces (excluding loopback). Informational only. When the container has multiple Docker networks attached, all non-loopback addresses are listed |
-| **Current Egress IP** | The public IP address that remote servers see when traffic exits through Cloudflare WARP. This is a shared, dynamic Cloudflare address and may change at any time. It is **not** the address clients connect to |
-
-Example dashboard row:
-
-```text
-Instance | OmniRoute Proxy  | Internal Endpoint | Current Egress IP | Country | Colo | Notes              | WARP | Health
-1        | 10.0.0.254:2080  | 127.0.0.1:40000   | 2a09:bac5:...     | Brazil  | GRU  | conta1@gmail.com   | ON   | Healthy
-2        | 10.0.0.254:2081  | 127.0.0.1:40001   | 2a09:bac5:...     | Brazil  | GRU  | conta2@gmail.com   | ON   | Healthy
-```
-
-The API endpoint `GET /api/instances` returns `proxy_host_omniroute`, `proxy_address_omniroute`, `container_ips`, `egress_ip`, `country_code`, `country_name`, `colo`, and `note` for each instance. Notes can be updated via `PATCH /api/instances/{id}/note`.
-
-## Zero Trust (Free WARP+ Routing)
-
-Enroll devices into Cloudflare Zero Trust using service tokens for free WARP+ equivalent routing — no browser needed. See the **[Zero Trust setup guide](docs/zero-trust.md)** for configuration and usage.
-
-## Mobile VPN (Shadowsocks)
-
-Connect your mobile devices using Shadowsocks apps - works as a system-wide VPN without requiring special Docker privileges. **Shadowsocks is always enabled** on ports 8388/8389.
-
-### Supported Apps
-
-| Platform | App | Price |
-|----------|-----|-------|
-| Android | [Shadowsocks](https://play.google.com/store/apps/details?id=com.github.shadowsocks) | Free |
-| Android | [v2rayNG](https://play.google.com/store/apps/details?id=com.v2ray.ang) | Free |
-| iOS | [Shadowrocket](https://apps.apple.com/app/shadowrocket/id932747118) | ~$3 |
-| iOS | [Potatso Lite](https://apps.apple.com/app/potatso-lite/id1239860606) | Free |
-
-### Setup
-
-```yaml
-services:
-  warp:
-    build:
-      context: .
-    ports:
-      - "8388:8388"  # Shadowsocks WARP (Cloudflare IP)
-      - "8389:8389"  # Shadowsocks Direct (real IP)
-    environment:
-      - PROXY_PASS=your-secure-password  # Optional: sets password for all protocols
-    volumes:
-      - warp-data:/var/lib/cloudflare-warp
-
-volumes:
-  warp-data:
-```
-
-### Mobile App Configuration
-
-| Setting | Value |
-|---------|-------|
-| Server | Your server IP or domain |
-| Port | `8388` (WARP) or `8389` (Direct) |
-| Password | Your `PROXY_PASS` or `cloudflare-warp` (default) |
-| Method | `chacha20-ietf-poly1305` (default) |
-
-### Available Encryption Methods
-
-**Recommended (AEAD):**
-- `chacha20-ietf-poly1305` (default, recommended for mobile)
-- `aes-256-gcm`
-- `aes-128-gcm`
-
-**Shadowsocks 2022 (newest, requires base64 key as password):**
-- `2022-blake3-aes-128-gcm`
-- `2022-blake3-aes-256-gcm`
-- `2022-blake3-chacha20-poly1305`
-
-**Other:**
-- `xchacha20-ietf-poly1305`
-- `chacha20-poly1305`
-
-### Port Reference
-
+Direct proxies exit directly through Docker network without routing through WARP:
 | Port | Protocol | Route |
 |------|----------|-------|
-| 8388 | Shadowsocks | Through WARP (Cloudflare IP) |
+| 1081 | SOCKS5 | Direct (real IP) |
+| 8081 | HTTP | Direct (real IP) |
 | 8389 | Shadowsocks | Direct (real IP) |
 
 ## License

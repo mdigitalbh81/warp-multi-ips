@@ -33,13 +33,15 @@ WATCHDOG_STATE_FILE = Path(os.environ.get("WATCHDOG_STATE_FILE", "/tmp/watchdog-
 STATIC_DIR = Path(os.environ.get("ADMIN_STATIC_DIR", Path(__file__).resolve().parent / "static"))
 TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
 COMMON_SH = "/warp-common.sh"
-MAX_INSTANCES = int(os.environ.get("MAX_WARP_INSTANCES") or os.environ.get("ADMIN_MAX_INSTANCES") or "45")
+
+MAX_INSTANCES = int(os.environ.get("MAX_WARP_INSTANCES") or os.environ.get("ADMIN_MAX_INSTANCES", "45"))
 INITIAL_ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 INITIAL_ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 ADMIN_AUTH_MAX_FAILURES = int(os.environ.get("ADMIN_AUTH_MAX_FAILURES", "5"))
 ADMIN_AUTH_WINDOW_SECONDS = int(os.environ.get("ADMIN_AUTH_WINDOW_SECONDS", "300"))
 ADMIN_AUTH_BLOCK_SECONDS = int(os.environ.get("ADMIN_AUTH_BLOCK_SECONDS", "600"))
 ADMIN_AUTH_MAX_IPS = int(os.environ.get("ADMIN_AUTH_MAX_IPS", "2048"))
+
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
@@ -72,13 +74,10 @@ STATE = {
     "last_refresh_finished": None,
 }
 
-# Grace period (seconds) for transient trace failures: when the last confirmed
-# warp=on is within this window *and* process/internal SOCKS remain alive, the
-# instance keeps its previous warp_connected state instead of flipping to False.
+# Grace period (seconds) for transient trace failures
 WARP_CONNECTED_GRACE_SECONDS = int(os.environ.get("WARP_CONNECTED_GRACE_SECONDS", "90"))
-
 _WARP_LAST_CONFIRMED = {}  # index -> time.time() of last successful warp=on trace
-RECOVERY_LOCKS = {}   # per-instance threading.Lock for manual recovery
+RECOVERY_LOCKS = {}  # per-instance threading.Lock for manual recovery
 
 
 def utc_now():
@@ -90,6 +89,8 @@ def read_json(path, default):
         with path.open() as fh:
             return json.load(fh)
     except FileNotFoundError:
+        return default
+    except Exception:
         return default
 
 
@@ -124,25 +125,24 @@ def write_secret_json(path, data):
         subprocess.run(["sudo", "chmod", "600", str(path)], capture_output=True)
 
 
-
 def read_instance_notes():
     """Read persistent per-instance notes."""
     return read_json(NOTES_FILE, {})
 
 
 def write_instance_notes(notes):
-    """Persist per-instance notes.  Keys are string instance indices (0-based)."""
+    """Persist per-instance notes. Keys are string instance indices (0-based)."""
     write_json_atomic(NOTES_FILE, notes)
 
 
 def get_instance_note(index):
-    """Return the note for a 0-based instance index, or empty string."""
+    """Return note for a 0-based instance index, or empty string."""
     notes = read_instance_notes()
     return notes.get(str(index), "")
 
 
 def set_instance_note(index, note):
-    """Set the note for a 0-based instance index."""
+    """Set note for a 0-based instance index."""
     with NOTES_LOCK:
         notes = read_instance_notes()
         note = (note or "").strip()
@@ -151,11 +151,11 @@ def set_instance_note(index, note):
         else:
             notes.pop(str(index), None)
         write_instance_notes(notes)
-    return note
+        return note
 
 
 def read_watchdog_state():
-    """Read the watchdog state JSON written by watchdog.sh."""
+    """Read watchdog state JSON written by watchdog.sh."""
     return read_json(WATCHDOG_STATE_FILE, {})
 
 
@@ -167,7 +167,7 @@ def get_watchdog_instance(index):
 
 
 def get_recovery_lock(index):
-    """Get or create a per-instance recovery lock."""
+    """Get or create per-instance recovery lock."""
     with WATCHDOG_LOCK:
         if index not in RECOVERY_LOCKS:
             RECOVERY_LOCKS[index] = threading.Lock()
@@ -202,14 +202,22 @@ def manual_restart_wireproxy_instance(index, cfg=None):
                 pass
 
         if conf_file.exists():
-            proc = subprocess.Popen(["wireproxy", "-c", str(conf_file)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            proc = subprocess.Popen(
+                ["wireproxy", "-c", str(conf_file)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             pid_file.write_text(str(proc.pid))
             warp_pid_file.write_text(str(proc.pid))
         else:
             start_script = Path("/start-wireproxy-instance.sh")
             if not start_script.exists():
                 start_script = Path(__file__).resolve().parents[1] / "start-wireproxy-instance.sh"
-            subprocess.Popen([str(start_script), str(index), str(port), str(cfg.get("warp_connect_timeout", 30))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(
+                [str(start_script), str(index), str(port), str(cfg.get("warp_connect_timeout", 30))],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
         timeout = cfg.get("warp_connect_timeout", 30)
         deadline = time.time() + timeout
@@ -233,8 +241,6 @@ def manual_restart_wireproxy_instance(index, cfg=None):
 def manual_reprovision_instance(index):
     """Reprovision identity for wireproxy instance (new wgcf registration and WireGuard profile)."""
     cfg = get_config(True)
-    if cfg.get("warp_engine") != "wireproxy":
-        return {"ok": False, "error": "reprovision identity only supported for wireproxy engine"}, 400
     lock = get_recovery_lock(index)
     if not lock.acquire(blocking=False):
         return {"ok": False, "error": "recovery in progress for this instance"}, 409
@@ -242,7 +248,6 @@ def manual_reprovision_instance(index):
         port = 40000 + index
         data_dir = WARP_DATA_DIR / "lightweight" / f"instance-{index}"
         stop_instance(index)
-
         for fname in ("wgcf-account.toml", "wgcf-profile.conf", "wireproxy.conf", "egress.json"):
             fpath = data_dir / fname
             if fpath.exists():
@@ -256,8 +261,11 @@ def manual_reprovision_instance(index):
             start_script = Path(__file__).resolve().parents[1] / "start-wireproxy-instance.sh"
 
         license_key = os.environ.get("LICENSE_KEYS_CSV") or os.environ.get("WARP_LICENSE_KEY", "")
-        subprocess.Popen([str(start_script), str(index), str(port), license_key, str(cfg.get("warp_connect_timeout", 30))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
+        subprocess.Popen(
+            [str(start_script), str(index), str(port), license_key, str(cfg.get("warp_connect_timeout", 30))],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         timeout = cfg.get("warp_connect_timeout", 30) + 15
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -280,136 +288,13 @@ def manual_reprovision_instance(index):
 def manual_reconnect_instance(index):
     """Attempt a light reconnect for a specific instance (manual trigger)."""
     cfg = get_config(True)
-    if cfg.get("warp_engine") == "wireproxy":
-        return manual_restart_wireproxy_instance(index, cfg)
-    lock = get_recovery_lock(index)
-    if not lock.acquire(blocking=False):
-        return {"ok": False, "error": "recovery already in progress for this instance"}, 409
-    try:
-        run_dir = f"/run/warp-{index}"
-        dbus_sock = f"/run/dbus-{index}/system_bus_socket"
-        env = os.environ.copy()
-        env["RUNTIME_DIRECTORY"] = run_dir
-        env["DBUS_SYSTEM_BUS_ADDRESS"] = f"unix:path={dbus_sock}"
-        result = subprocess.run(
-            ["sudo", "env",
-             f"RUNTIME_DIRECTORY={run_dir}",
-             f"DBUS_SYSTEM_BUS_ADDRESS=unix:path={dbus_sock}",
-             "warp-cli", "--accept-tos", "connect"],
-            capture_output=True, text=True, timeout=30,
-        )
-        port = 40000 + index
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            if listener_present(port):
-                cfg = get_config(True)
-                try:
-                    trace = trace_for_proxy(port, cfg)
-                    if trace.get("warp") in ("on", "plus"):
-                        return {"ok": True, "message": f"instance {index + 1} reconnected"}, 200
-                except Exception:
-                    pass
-            time.sleep(3)
-        return {"ok": False, "error": f"instance {index + 1} reconnect timed out"}, 500
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}, 500
-    finally:
-        lock.release()
+    return manual_restart_wireproxy_instance(index, cfg)
 
 
 def manual_restart_instance(index):
-    """Restart warp-svc for a specific instance (manual trigger)."""
+    """Restart wireproxy for a specific instance (manual trigger)."""
     cfg = get_config(True)
-    if cfg.get("warp_engine") == "wireproxy":
-        return manual_restart_wireproxy_instance(index, cfg)
-    lock = get_recovery_lock(index)
-    if not lock.acquire(blocking=False):
-        return {"ok": False, "error": "recovery already in progress for this instance"}, 409
-    try:
-        port = 40000 + index
-        data_dir = f"/var/lib/cloudflare-warp/instance-{index}"
-        run_dir = f"/run/warp-{index}"
-        dbus_dir = f"/run/dbus-{index}"
-        dbus_sock = f"{dbus_dir}/system_bus_socket"
-        pid_file = Path(f"/tmp/warp-instance-{index}.pid")
-
-        # Stop warp-svc
-        stop_instance(index)
-
-        # Ensure dirs
-        subprocess.run(["sudo", "mkdir", "-p", data_dir, run_dir, dbus_dir],
-                        capture_output=True)
-
-        # Restart D-Bus if needed
-        dbus_path = Path(dbus_sock)
-        if not dbus_path.exists():
-            subprocess.Popen(
-                ["sudo", "dbus-daemon",
-                 f"--address=unix:path={dbus_sock}",
-                 "--config-file=/usr/share/dbus-1/system.conf",
-                 "--nopidfile", "--nofork"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            time.sleep(1)
-
-        # Start warp-svc
-        proc = subprocess.Popen(
-            ["sudo", "env",
-             f"STATE_DIRECTORY={data_dir}",
-             f"RUNTIME_DIRECTORY={run_dir}",
-             f"DBUS_SYSTEM_BUS_ADDRESS=unix:path={dbus_sock}",
-             "warp-svc", "--accept-tos"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        pid_file.write_text(str(proc.pid))
-
-        # Wait for daemon ready
-        cfg = get_config(True)
-        timeout = cfg.get("warp_connect_timeout", 30)
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            result = subprocess.run(
-                ["sudo", "env",
-                 f"RUNTIME_DIRECTORY={run_dir}",
-                 f"DBUS_SYSTEM_BUS_ADDRESS=unix:path={dbus_sock}",
-                 "warp-cli", "--accept-tos", "status"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0 and ("Status" in result.stdout or "Connected" in result.stdout):
-                break
-            time.sleep(2)
-
-        # Set proxy mode and connect
-        for cmd in [
-            ["mode", "proxy"],
-            ["proxy", "port", str(port)],
-            ["connect"],
-        ]:
-            subprocess.run(
-                ["sudo", "env",
-                 f"RUNTIME_DIRECTORY={run_dir}",
-                 f"DBUS_SYSTEM_BUS_ADDRESS=unix:path={dbus_sock}",
-                 "warp-cli", "--accept-tos"] + cmd,
-                capture_output=True, text=True, timeout=15,
-       )
-
-        # Verify
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            if listener_present(port):
-                try:
-                    trace = trace_for_proxy(port, cfg)
-                    if trace.get("warp") in ("on", "plus"):
-                        return {"ok": True, "message": f"instance {index + 1} restarted successfully"}, 200
-                except Exception:
-                    pass
-            time.sleep(3)
-
-        return {"ok": False, "error": f"instance {index + 1} restart did not restore connectivity"}, 500
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}, 500
-    finally:
-        lock.release()
+    return manual_restart_wireproxy_instance(index, cfg)
 
 
 def parse_bool(value):
@@ -469,11 +354,14 @@ def read_admin_credentials():
 
 
 def write_admin_credentials(username, password):
-    write_secret_json(CREDENTIALS_FILE, {
-        "username": username,
-        "password_hash": hash_password(password),
-        "updated_at": utc_now(),
-    })
+    write_secret_json(
+        CREDENTIALS_FILE,
+        {
+            "username": username,
+            "password_hash": hash_password(password),
+            "updated_at": utc_now(),
+        },
+    )
 
 
 def ensure_admin_credentials():
@@ -481,13 +369,12 @@ def ensure_admin_credentials():
         stored = read_admin_credentials()
         if stored.get("username") and stored.get("password_hash"):
             return True, None
-
         username = INITIAL_ADMIN_USER.strip()
         password = INITIAL_ADMIN_PASSWORD
         if not username or not password:
             return False, "ADMIN_USER and ADMIN_PASSWORD are required when ADMIN_ENABLED=true"
         if not valid_username(username):
-            return False, "ADMIN_USER must be 3-64 characters and contain only letters, numbers, dot, underscore, or hyphen"
+            return False, "ADMIN_USER must be 3-64 characters and contain only letters, numbers, dot, underscore, hyphen"
         errors = password_policy_errors(password)
         if errors:
             return False, "ADMIN_PASSWORD is not strong enough: " + "; ".join(errors)
@@ -497,9 +384,9 @@ def ensure_admin_credentials():
 
 def authenticate_admin(username, password):
     stored = read_admin_credentials()
-    return (
-        bool(username)
-        and bool(password)
+    return bool(
+        username
+        and password
         and username == stored.get("username")
         and verify_password(password, stored.get("password_hash", ""))
     )
@@ -514,13 +401,12 @@ def cleanup_auth_failures(now=None):
             record["failures"] = [ts for ts in record.get("failures", []) if ts >= cutoff]
             if not record["failures"] and record.get("blocked_until", 0) <= now:
                 AUTH_FAILURES.pop(ip, None)
-
-        if len(AUTH_FAILURES) <= ADMIN_AUTH_MAX_IPS:
-            return
-        for ip, _record in sorted(AUTH_FAILURES.items(), key=lambda item: item[1].get("last_seen", 0)):
-            if len(AUTH_FAILURES) <= ADMIN_AUTH_MAX_IPS:
-                break
-            AUTH_FAILURES.pop(ip, None)
+        while len(AUTH_FAILURES) > ADMIN_AUTH_MAX_IPS:
+            oldest_ip = min(
+                AUTH_FAILURES.keys(),
+                key=lambda k: AUTH_FAILURES[k].get("last_seen", 0),
+            )
+            AUTH_FAILURES.pop(oldest_ip, None)
 
 
 def auth_retry_after(ip, now=None):
@@ -537,18 +423,17 @@ def auth_retry_after(ip, now=None):
 
 def record_auth_failure(ip, now=None):
     now = now or time.time()
-    cleanup_auth_failures(now)
     cutoff = now - ADMIN_AUTH_WINDOW_SECONDS
     with AUTH_RATE_LOCK:
         record = AUTH_FAILURES.setdefault(ip, {"failures": [], "blocked_until": 0, "last_seen": now})
         record["last_seen"] = now
-        record["failures"] = [ts for ts in record.get("failures", []) if ts >= cutoff]
-        record["failures"].append(now)
-        if len(record["failures"]) >= ADMIN_AUTH_MAX_FAILURES:
-            record["blocked_until"] = now + ADMIN_AUTH_BLOCK_SECONDS
-        retry_after = auth_retry_after(ip, now)
-    cleanup_auth_failures(now)
-    return retry_after
+        failures = [ts for ts in record.get("failures", []) if ts >= cutoff]
+        failures.append(now)
+        record["failures"] = failures
+        if len(failures) >= ADMIN_AUTH_MAX_FAILURES:
+            record["blocked_until"] = max(record.get("blocked_until", 0), now + ADMIN_AUTH_BLOCK_SECONDS)
+        cleanup_auth_failures(now)
+        return auth_retry_after(ip, now)
 
 
 def clear_auth_failures(ip):
@@ -559,76 +444,88 @@ def clear_auth_failures(ip):
 def public_admin_account():
     stored = read_admin_credentials()
     return {
-        "username": stored.get("username", ""),
-        "credentials_configured": bool(stored.get("username") and stored.get("password_hash")),
+        "username": stored.get("username", INITIAL_ADMIN_USER),
+        "updated_at": stored.get("updated_at"),
     }
 
 
-def update_admin_credentials(body):
-    current_password = body.get("current_password", "")
-    new_username = (body.get("new_username") or "").strip()
-    new_password = body.get("new_password") or ""
-    confirm_password = body.get("confirm_password") or ""
+def update_admin_credentials(payload):
+    with CREDENTIALS_LOCK:
+        stored = read_admin_credentials()
+        current_password = payload.get("current_password", "")
+        new_username = (payload.get("new_username") or stored.get("username") or INITIAL_ADMIN_USER).strip()
+        new_password = payload.get("new_password", "")
+        confirm_password = payload.get("confirm_password", "")
 
-    stored = read_admin_credentials()
-    username = stored.get("username", "")
-    if not verify_password(current_password, stored.get("password_hash", "")):
-        return {"ok": False, "errors": ["current password is incorrect"]}, 400
+        if not verify_password(current_password, stored.get("password_hash", "")):
+            return {"ok": False, "errors": ["current password is incorrect"]}, 400
 
-    target_username = new_username or username
-    if not valid_username(target_username):
-        return {"ok": False, "errors": ["new username must be 3-64 characters and contain only letters, numbers, dot, underscore, or hyphen"]}, 400
+        if not valid_username(new_username):
+            return {
+                "ok": False,
+                "errors": ["new username must be 3-64 characters and contain only letters, numbers, dot, underscore, hyphen"],
+            }, 400
 
-    changing_password = bool(new_password or confirm_password)
-    if changing_password:
-        if new_password != confirm_password:
-            return {"ok": False, "errors": ["new password and confirmation do not match"]}, 400
-        errors = password_policy_errors(new_password)
-        if errors:
-            return {"ok": False, "errors": errors}, 400
-    elif target_username == username:
-        return {"ok": False, "errors": ["provide a new username or new password"]}, 400
+        if new_password or confirm_password:
+            if new_password != confirm_password:
+                return {"ok": False, "errors": ["new password and confirmation do not match"]}, 400
+            errors = password_policy_errors(new_password)
+            if errors:
+                return {"ok": False, "errors": errors}, 400
+            target_password = new_password
+        else:
+            target_password = current_password
 
-    write_secret_json(CREDENTIALS_FILE, {
-        "username": target_username,
-        "password_hash": hash_password(new_password) if changing_password else stored["password_hash"],
-        "updated_at": utc_now(),
-    })
-    return {
-        "ok": True,
-        "message": "Administrator credentials updated successfully.",
-        "account": public_admin_account(),
-    }, 200
+        write_admin_credentials(new_username, target_password)
+        return {
+            "ok": True,
+            "message": "admin credentials updated",
+            "account": public_admin_account(),
+        }, 200
 
 
 def read_env_file():
     env = {}
     if not ENV_FILE.exists():
         return env
-    for line in ENV_FILE.read_text().splitlines():
-        if not line or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        env[key] = value
+    try:
+        for line in ENV_FILE.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip()
+    except Exception:
+        pass
     return env
 
 
-def nonempty(value):
-    return value is not None and str(value).strip() != ""
+def nonempty(val):
+    return val is not None and str(val).strip() != ""
 
 
 def resolve_proxy_host_omniroute(env, stored=None):
-    stored = stored or {}
-    candidates = (
-        os.environ.get("PROXY_HOST_OMNIROUTE", ""),
-        env.get("PROXY_HOST_OMNIROUTE", ""),
-        stored.get("proxy_host_omniroute", ""),
-        os.environ.get("PROXY_HOST", ""),
-        env.get("PROXY_HOST", ""),
-    )
-    for value in candidates:
-        if nonempty(value):
-            return str(value).strip()
+    if stored is None:
+        stored = {}
+    if nonempty(os.environ.get("ENV_PROXY_HOST_OMNIROUTE_SET")) and parse_bool(
+        os.environ.get("ENV_PROXY_HOST_OMNIROUTE_SET")
+    ):
+        return os.environ.get("PROXY_HOST_OMNIROUTE", "").strip()
+    if nonempty(env.get("ENV_PROXY_HOST_OMNIROUTE_SET")) and parse_bool(env.get("ENV_PROXY_HOST_OMNIROUTE_SET")):
+        return env.get("PROXY_HOST_OMNIROUTE", "").strip()
+    if is_explicit_env("PROXY_HOST_OMNIROUTE"):
+        if nonempty(os.environ.get("PROXY_HOST_OMNIROUTE")):
+            return os.environ.get("PROXY_HOST_OMNIROUTE", "").strip()
+        if nonempty(env.get("PROXY_HOST_OMNIROUTE")):
+            return env.get("PROXY_HOST_OMNIROUTE", "").strip()
+    if nonempty(stored.get("proxy_host_omniroute")):
+        return str(stored.get("proxy_host_omniroute")).strip()
+    if nonempty(env.get("PROXY_HOST_OMNIROUTE")):
+        return env.get("PROXY_HOST_OMNIROUTE", "").strip()
+    if nonempty(os.environ.get("PROXY_HOST_OMNIROUTE")):
+        return os.environ.get("PROXY_HOST_OMNIROUTE", "").strip()
+    if nonempty(os.environ.get("PROXY_HOST")):
+        return os.environ.get("PROXY_HOST", "").strip()
     return ""
 
 
@@ -644,64 +541,51 @@ def is_explicit_env(env_key):
     val = os.environ.get(env_key)
     if nonempty(val) and f"ENV_{env_key}_SET" not in os.environ and f"ENV_{env_key}_SET" not in env:
         return True
-    if env_key == "PROXY_HOST_OMNIROUTE" and nonempty(os.environ.get("PROXY_HOST")):
+    val_env = env.get(env_key)
+    if nonempty(val_env) and f"ENV_{env_key}_SET" not in os.environ and f"ENV_{env_key}_SET" not in env:
+        return True
+    if env_key == "PROXY_HOST_OMNIROUTE" and (nonempty(os.environ.get("PROXY_HOST")) or nonempty(env.get("PROXY_HOST"))):
         return True
     return False
 
 
-def resolve_config_field(env, stored, env_key, stored_key, default, conv=str, min_val=None):
-    stored = stored or {}
-    # 1. Container environment variable
-    if is_explicit_env(env_key):
-        val = os.environ.get(env_key)
-        if nonempty(val):
+def resolve_config_field(env, stored, env_name, stored_key, default, conv, min_val=None):
+    if is_explicit_env(env_name):
+        raw = os.environ.get(env_name, env.get(env_name))
+        if raw is not None and str(raw).strip() != "":
             try:
-                cval = conv(val)
-                if min_val is None or cval >= min_val:
-                    return cval
+                v = conv(raw)
+                if min_val is not None and isinstance(v, (int, float)) and v < min_val:
+                    return default
+                return v
             except (ValueError, TypeError):
-                pass
-
-    # 2. Persisted admin config
-    if stored_key in stored and stored[stored_key] is not None and str(stored[stored_key]).strip() != "":
+                return default
+    if stored_key in stored:
         try:
-            cval = conv(stored[stored_key])
-            if min_val is None or cval >= min_val:
-                return cval
+            v = conv(stored[stored_key])
+            if min_val is not None and isinstance(v, (int, float)) and v < min_val:
+                return default
+            return v
         except (ValueError, TypeError):
             pass
-
-    # 3. WARP_ENV_FILE fallback
-    val = env.get(env_key)
-    if nonempty(val):
+    raw = env.get(env_name, os.environ.get(env_name))
+    if raw is not None and str(raw).strip() != "":
         try:
-            cval = conv(val)
-            if min_val is None or cval >= min_val:
-                return cval
+            v = conv(raw)
+            if min_val is not None and isinstance(v, (int, float)) and v < min_val:
+                return default
+            return v
         except (ValueError, TypeError):
             pass
-
-    # 4. OS environment fallback
-    val = os.environ.get(env_key)
-    if nonempty(val):
-        try:
-            cval = conv(val)
-            if min_val is None or cval >= min_val:
-                return cval
-        except (ValueError, TypeError):
-            pass
-    # 5. Default
-    return conv(default)
+    return default
 
 
 def sync_persisted_config():
-    if not CONFIG_FILE.exists():
-        return
     stored = read_json(CONFIG_FILE, {})
     if not stored:
         return
     changed = False
-    for key, env_key, conv in [
+    for key, env_key, conv in (
         ("instances", "WARP_INSTANCES", int),
         ("proxy_mode", "PROXY_MODE", str),
         ("proxy_base_port", "PROXY_BASE_PORT", int),
@@ -709,10 +593,9 @@ def sync_persisted_config():
         ("warp_connect_timeout", "WARP_CONNECT_TIMEOUT", int),
         ("auto_refresh_interval", "AUTO_REFRESH_INTERVAL", int),
         ("proxy_host_omniroute", "PROXY_HOST_OMNIROUTE", str),
-        ("warp_engine", "WARP_ENGINE", str),
         ("lightweight_egress_family", "LIGHTWEIGHT_EGRESS_FAMILY", str),
         ("lightweight_require_unique_egress", "LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS", parse_bool),
-    ]:
+    ):
         if not is_explicit_env(env_key):
             continue
         val = os.environ.get(env_key)
@@ -726,6 +609,10 @@ def sync_persisted_config():
                     changed = True
             except (ValueError, TypeError):
                 pass
+    # Clean deprecated warp_engine field from stored config
+    if "warp_engine" in stored:
+        stored.pop("warp_engine", None)
+        changed = True
     if changed:
         write_json_atomic(CONFIG_FILE, stored)
 
@@ -735,17 +622,18 @@ def base_config():
     return {
         "proxy_host_omniroute": resolve_proxy_host_omniroute(env),
         "instances": int(env.get("WARP_INSTANCES") or os.environ.get("WARP_INSTANCES", "1")),
-        "proxy_mode": env.get("PROXY_MODE") or os.environ.get("PROXY_MODE", "round-robin"),
+        "proxy_mode": env.get("PROXY_MODE") or os.environ.get("PROXY_MODE", "dedicated"),
         "proxy_base_port": int(env.get("PROXY_BASE_PORT") or os.environ.get("PROXY_BASE_PORT", "2080")),
         "proxy_max_rps": int(env.get("PROXY_MAX_RPS") or os.environ.get("PROXY_MAX_RPS", "50")),
         "warp_connect_timeout": int(env.get("WARP_CONNECT_TIMEOUT") or os.environ.get("WARP_CONNECT_TIMEOUT", "30")),
         "auto_refresh_interval": int(env.get("AUTO_REFRESH_INTERVAL") or os.environ.get("AUTO_REFRESH_INTERVAL", "60")),
         "proxy_auth_enabled": parse_bool(env.get("PROXY_AUTH_ENABLED", "false")),
         "proxy_user": env.get("PROXY_USER", ""),
-        "proxy_password": os.environ.get("PROXY_PASS", "") if parse_bool(env.get("PROXY_AUTH_ENABLED", "false")) else "",
-        "warp_engine": env.get("WARP_ENGINE") or os.environ.get("WARP_ENGINE", "wireproxy"),
+        "proxy_password": (os.environ.get("PROXY_PASS", "") if parse_bool(env.get("PROXY_AUTH_ENABLED", "false")) else ""),
         "lightweight_egress_family": env.get("LIGHTWEIGHT_EGRESS_FAMILY") or os.environ.get("LIGHTWEIGHT_EGRESS_FAMILY", "ipv6"),
-        "lightweight_require_unique_egress": parse_bool(env.get("LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS", os.environ.get("LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS", "true"))),
+        "lightweight_require_unique_egress": parse_bool(
+            env.get("LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS", os.environ.get("LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS", "true"))
+        ),
     }
 
 
@@ -755,14 +643,13 @@ def get_config(include_secret=False):
     cfg = {
         "proxy_host_omniroute": resolve_proxy_host_omniroute(env, stored),
         "instances": resolve_config_field(env, stored, "WARP_INSTANCES", "instances", 1, int, min_val=1),
-        "proxy_mode": resolve_config_field(env, stored, "PROXY_MODE", "proxy_mode", "round-robin", str),
+        "proxy_mode": resolve_config_field(env, stored, "PROXY_MODE", "proxy_mode", "dedicated", str),
         "proxy_base_port": resolve_config_field(env, stored, "PROXY_BASE_PORT", "proxy_base_port", 2080, int, min_val=1),
         "proxy_max_rps": resolve_config_field(env, stored, "PROXY_MAX_RPS", "proxy_max_rps", 50, int, min_val=1),
         "warp_connect_timeout": resolve_config_field(env, stored, "WARP_CONNECT_TIMEOUT", "warp_connect_timeout", 30, int, min_val=1),
         "auto_refresh_interval": resolve_config_field(env, stored, "AUTO_REFRESH_INTERVAL", "auto_refresh_interval", 60, int, min_val=1),
         "proxy_auth_enabled": bool(stored.get("proxy_auth_enabled", parse_bool(env.get("PROXY_AUTH_ENABLED")))),
         "proxy_user": stored.get("proxy_user", env.get("PROXY_USER", "")),
-        "warp_engine": resolve_config_field(env, stored, "WARP_ENGINE", "warp_engine", "wireproxy", str),
         "lightweight_egress_family": resolve_config_field(env, stored, "LIGHTWEIGHT_EGRESS_FAMILY", "lightweight_egress_family", "ipv6", str),
         "lightweight_require_unique_egress": resolve_config_field(env, stored, "LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS", "lightweight_require_unique_egress", True, parse_bool),
     }
@@ -786,13 +673,15 @@ def validate_config(cfg):
     if not isinstance(instances, int) or instances < 1 or instances > MAX_INSTANCES:
         errors.append(f"instances must be between 1 and {MAX_INSTANCES}")
     if mode not in ("round-robin", "dedicated"):
-        errors.append("proxy_mode must be round-robin or dedicated")
-    engine = cfg.get("warp_engine", "wireproxy")
-    if engine != "wireproxy":
-        errors.append("only wireproxy engine is supported")
+        errors.append("proxy_mode must be 'round-robin' or 'dedicated'")
+
+    if "warp_engine" in cfg and cfg["warp_engine"] not in ("wireproxy", "official"):
+        errors.append("warp_engine must be wireproxy")
+
     family = cfg.get("lightweight_egress_family", "ipv6")
     if family not in ("ipv6", "ipv4", "auto"):
-        errors.append("lightweight_egress_family must be ipv6, ipv4, or auto")
+        errors.append("lightweight_egress_family must be 'ipv6', 'ipv4', or 'auto'")
+
     for name, value in (
         ("proxy_base_port", base_port),
         ("proxy_max_rps", max_rps),
@@ -801,6 +690,7 @@ def validate_config(cfg):
     ):
         if not isinstance(value, int):
             errors.append(f"{name} must be an integer")
+
     if isinstance(base_port, int) and (base_port < 1 or base_port > 65535):
         errors.append("proxy_base_port must be between 1 and 65535")
     if isinstance(max_rps, int) and (max_rps < 1 or max_rps > 100000):
@@ -809,27 +699,27 @@ def validate_config(cfg):
         errors.append("warp_connect_timeout must be between 5 and 600 seconds")
     if isinstance(interval, int) and (interval < 15 or interval > 3600):
         errors.append("auto_refresh_interval must be between 15 and 3600 seconds")
-    if (
-        mode == "dedicated"
-        and isinstance(base_port, int)
-        and isinstance(instances, int)
-        and base_port + instances - 1 > 65535
-    ):
+
+    if mode == "dedicated" and isinstance(base_port, int) and isinstance(instances, int) and (base_port + instances - 1 > 65535):
         errors.append("dedicated proxy ports exceed TCP port range")
+
     if isinstance(base_port, int) and isinstance(instances, int) and 1 <= instances <= MAX_INSTANCES:
         fixed_ports = {1081, 8080, 8081, 8388, 8389, int(os.environ.get("ADMIN_PORT", "9090"))}
         dedicated_ports = set(range(base_port, base_port + max(instances, 0)))
         conflicts = sorted(fixed_ports.intersection(dedicated_ports))
         if mode == "dedicated" and conflicts:
             errors.append(f"dedicated proxy ports conflict with fixed ports: {conflicts}")
+
         internal_conflicts = sorted(dedicated_ports.intersection(range(40000, 40000 + max(instances, 0))))
         if mode == "dedicated" and internal_conflicts:
             errors.append(f"dedicated proxy ports conflict with internal WARP ports: {internal_conflicts}")
+
     if cfg.get("proxy_auth_enabled"):
         if not cfg.get("proxy_user"):
             errors.append("proxy_user is required when proxy authentication is enabled")
         if not cfg.get("proxy_password"):
             errors.append("proxy password is required when enabling proxy authentication")
+
     return errors
 
 
@@ -873,7 +763,7 @@ def listener_present(port, listening_ports=None):
 
 
 def get_container_ips():
-    """Return all non-loopback IPv4 addresses detected on this container."""
+    """Return all non-loopback IPv4 addresses detected for this container."""
     ips = []
     try:
         result = subprocess.run(
@@ -888,7 +778,7 @@ def get_container_ips():
                 for i, part in enumerate(parts):
                     if part == "inet" and i + 1 < len(parts):
                         addr = parts[i + 1].split("/")[0]
-                        if addr != "127.0.0.1":
+                        if addr != "127.0.0.1" and addr not in ips:
                             ips.append(addr)
     except Exception:
         pass
@@ -909,14 +799,14 @@ def pid_alive(pid):
 
 
 def instance_process_alive(index):
-    for pid_path in (Path(f"/tmp/warp-instance-{index}.pid"), Path(f"/tmp/wireproxy-instance-{index}.pid")):
+    for pid_path in (Path(f"/tmp/wireproxy-instance-{index}.pid"), Path(f"/tmp/warp-instance-{index}.pid")):
         if pid_path.exists():
             try:
                 if pid_alive(pid_path.read_text().strip()):
                     return True
             except Exception:
                 pass
-    for pattern in (f"STATE_DIRECTORY=.*instance-{index}", f"wireproxy.*instance-{index}"):
+    for pattern in (f"wireproxy.*instance-{index}", f"wireproxy.conf"):
         result = subprocess.run(["pgrep", "-f", pattern], capture_output=True)
         if result.returncode == 0:
             return True
@@ -932,7 +822,7 @@ def query_ipv6_for_instance(internal_port, timeout=6):
         )
         if result.returncode == 0:
             ip = result.stdout.strip()
-            if ip and ":" in ip:
+            if ":" in ip:
                 return ip
     except Exception:
         pass
@@ -947,43 +837,52 @@ def read_egress_json(index):
 
 def write_egress_json(index, current_ipv6, previous_ipv6="", last_change=None):
     data_dir = WARP_DATA_DIR / "lightweight" / f"instance-{index}"
-    if data_dir.exists():
-        egress_file = data_dir / "egress.json"
-        write_secret_json(egress_file, {
-            "current_ipv6": current_ipv6 or "",
-            "previous_ipv6": previous_ipv6 or "",
+    if not data_dir.exists():
+        data_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            data_dir.chmod(0o700)
+        except Exception:
+            pass
+    egress_file = data_dir / "egress.json"
+    write_secret_json(
+        egress_file,
+        {
+            "current_ipv6": current_ipv6,
+            "previous_ipv6": previous_ipv6,
             "last_change": last_change or utc_now(),
-        })
+        },
+    )
 
 
 def get_instance_metrics(index):
-    """Attempt to get PSS, RSS and thread count for an instance process."""
-    metrics = {"pss_kb": None, "rss_kb": None, "threads": None}
-    for pid_file in (Path(f"/tmp/wireproxy-instance-{index}.pid"), Path(f"/tmp/warp-instance-{index}.pid")):
-        if pid_file.exists():
-            try:
-                pid = int(pid_file.read_text().strip())
-                status_path = Path(f"/proc/{pid}/status")
-                smaps_path = Path(f"/proc/{pid}/smaps_rollup")
-                if status_path.exists():
-                    for line in status_path.read_text().splitlines():
-                        if line.startswith("Threads:"):
-                            metrics["threads"] = int(line.split()[1])
-                        elif line.startswith("VmRSS:"):
-                            metrics["rss_kb"] = int(line.split()[1])
-                if smaps_path.exists():
-                    for line in smaps_path.read_text().splitlines():
-                        if line.startswith("Pss:"):
-                            metrics["pss_kb"] = int(line.split()[1])
-                if metrics["threads"] is not None:
-                    return metrics
-            except Exception:
-                pass
+    metrics = {"rss_kb": None, "pss_kb": None, "threads": None}
+    for pid_name in (f"wireproxy-instance-{index}.pid", f"warp-instance-{index}.pid"):
+        pid_file = Path(f"/tmp/{pid_name}")
+        if not pid_file.exists():
+            continue
+        try:
+            pid = int(pid_file.read_text().strip())
+            status_path = Path(f"/proc/{pid}/status")
+            smaps_path = Path(f"/proc/{pid}/smaps_rollup")
+            if status_path.exists():
+                for line in status_path.read_text().splitlines():
+                    if line.startswith("Threads:"):
+                        metrics["threads"] = int(line.split()[1])
+                    elif line.startswith("VmRSS:"):
+                        metrics["rss_kb"] = int(line.split()[1])
+            if smaps_path.exists():
+                for line in smaps_path.read_text().splitlines():
+                    if line.startswith("Pss:"):
+                        metrics["pss_kb"] = int(line.split()[1])
+            if metrics["threads"] is not None:
+                return metrics
+        except Exception:
+            pass
     return metrics
 
 
 def apply_uniqueness_check(items, cfg):
-    if cfg.get("warp_engine") == "wireproxy" and cfg.get("lightweight_require_unique_egress", True):
+    if cfg.get("lightweight_require_unique_egress", True):
         seen_ip6 = {}
         for item in items:
             ip = item.get("ipv6_egress") or (item.get("egress_ip") if item.get("egress_ip") and ":" in item.get("egress_ip") else None)
@@ -1013,7 +912,15 @@ def proxy_url(port, cfg):
 
 def trace_for_instance(internal_port, timeout=8):
     result = subprocess.run(
-        ["curl", "-fsS", "--max-time", str(timeout), "--socks5-hostname", f"127.0.0.1:{internal_port}", TRACE_URL],
+        [
+            "curl",
+            "-fsS",
+            "--max-time",
+            str(timeout),
+            "--socks5-hostname",
+            f"127.0.0.1:{internal_port}",
+            TRACE_URL,
+        ],
         text=True,
         capture_output=True,
     )
@@ -1031,7 +938,15 @@ def trace_for_proxy(port, cfg, timeout=10):
     if port >= 40000:
         return trace_for_instance(port, timeout=timeout)
     result = subprocess.run(
-        ["curl", "-fsS", "--max-time", str(timeout), "--proxy", proxy_url(port, cfg), TRACE_URL],
+        [
+            "curl",
+            "-fsS",
+            "--max-time",
+            str(timeout),
+            "--proxy",
+            proxy_url(port, cfg),
+            TRACE_URL,
+        ],
         text=True,
         capture_output=True,
     )
@@ -1046,15 +961,16 @@ def trace_for_proxy(port, cfg, timeout=10):
 
 
 def refresh_instance(index, cfg, listening_ports=None):
-    warp_engine = cfg.get("warp_engine", "wireproxy")
     proxy_port = cfg["proxy_base_port"] + index if cfg["proxy_mode"] == "dedicated" else 1080
-    proxy_host = cfg.get("proxy_host_omniroute") or ""
-    proxy_address = f"{proxy_host}:{proxy_port}" if proxy_host else ""
+    proxy_host = cfg.get("proxy_host_omniroute")
+    proxy_address = f"{proxy_host}:{proxy_port}" if proxy_host else None
+
     now = time.time()
     if now - _CONTAINER_IPS_CACHE["ts"] > 30:
         _CONTAINER_IPS_CACHE["ips"] = get_container_ips()
         _CONTAINER_IPS_CACHE["ts"] = now
     container_ips = _CONTAINER_IPS_CACHE["ips"]
+
     internal_port = 40000 + index
     process_running = instance_process_alive(index)
     internal_socks_ready = listener_present(internal_port, listening_ports=listening_ports)
@@ -1063,15 +979,17 @@ def refresh_instance(index, cfg, listening_ports=None):
     wd = get_watchdog_instance(index)
     ej = read_egress_json(index)
     metrics = get_instance_metrics(index)
+
     prev_egress = cached_item.get("egress_ip") or (wd.get("current_egress") if wd else None)
     prev_ipv6 = cached_item.get("previous_ipv6_egress") or ej.get("previous_ipv6") or (wd.get("previous_ipv6_egress") if wd else None)
     curr_ipv6 = cached_item.get("ipv6_egress") or ej.get("current_ipv6") or (wd.get("ipv6_egress") if wd else None)
     last_change = cached_item.get("last_egress_change") or ej.get("last_change") or (wd.get("last_egress_change") if wd else None)
+
     item = {
         "instance": index + 1,
         "proxy_port": proxy_port,
         "internal_port": internal_port,
-        "engine": warp_engine,
+        "engine": "wireproxy",
         "egress_ip": prev_egress,
         "ipv6_egress": curr_ipv6,
         "previous_ipv6_egress": prev_ipv6,
@@ -1087,6 +1005,8 @@ def refresh_instance(index, cfg, listening_ports=None):
         "country_code": cached_item.get("country_code"),
         "country_name": cached_item.get("country_name"),
         "location": cached_item.get("location"),
+        "note": get_instance_note(index),
+        "health": "starting" if process_running and not internal_socks_ready else "offline",
         "process_running": process_running,
         "internal_socks_ready": internal_socks_ready,
         "dedicated_proxy_ready": dedicated_proxy_ready,
@@ -1094,13 +1014,14 @@ def refresh_instance(index, cfg, listening_ports=None):
         "proxy_healthy": dedicated_proxy_ready,
         "listener_healthy": dedicated_proxy_ready,
         "internal_healthy": internal_socks_ready,
-        "note": get_instance_note(index),
-        "pss_kb": metrics.get("pss_kb"),
+        "watchdog": wd,
         "rss_kb": metrics.get("rss_kb"),
+        "pss_kb": metrics.get("pss_kb"),
         "threads": metrics.get("threads"),
         "last_check": utc_now(),
         "error": None,
     }
+
     if not process_running or not internal_socks_ready:
         item["health"] = "unavailable" if not process_running else "degraded"
         return item
@@ -1121,7 +1042,7 @@ def refresh_instance(index, cfg, listening_ports=None):
         item["location"] = loc
         item["error"] = None
 
-        if warp_engine == "wireproxy" or cfg.get("lightweight_egress_family") == "ipv6":
+        if cfg.get("lightweight_egress_family", "ipv6") == "ipv6":
             ip6 = query_ipv6_for_instance(internal_port, timeout=6)
             if not ip6 and trace_ip and ":" in trace_ip:
                 ip6 = trace_ip
@@ -1143,24 +1064,27 @@ def refresh_instance(index, cfg, listening_ports=None):
             item["egress_ip"] = trace_ip or prev_egress
             if trace_ip and ":" in trace_ip:
                 item["ipv6_egress"] = trace_ip
+
     except Exception as exc:
-        wd_status = wd.get("status") if wd else ""
+        wd_status = wd.get("status") if wd else None
         wd_failed = wd_status in ("offline", "degraded")
         last_confirmed = _WARP_LAST_CONFIRMED.get(index)
         grace_ok = (
             last_confirmed is not None
             and (time.time() - last_confirmed) < WARP_CONNECTED_GRACE_SECONDS
+            and not wd_failed
+            and internal_socks_ready
+            and process_running
         )
-        if not wd_failed and internal_socks_ready and process_running and grace_ok:
+
+        if grace_ok:
             item["warp"] = True
             item["warp_connected"] = True
             item["error"] = f"transient egress check warning: {exc}"
         else:
             item["warp"] = False
             item["warp_connected"] = False
-            if grace_ok:
-                item["error"] = str(exc)
-            elif last_confirmed is not None:
+            if not grace_ok and last_confirmed is not None:
                 item["health"] = "degraded"
                 item["error"] = f"warp confirmation expired ({int(time.time() - last_confirmed)}s ago): {exc}"
             else:
@@ -1188,11 +1112,15 @@ def refresh_all(force=False):
             if age < cfg["auto_refresh_interval"] and STATE["egress"]:
                 return list(STATE["egress"].values())
         STATE["last_refresh_started"] = time.time()
+
         results = {}
         listening_ports = get_listening_ports()
         max_workers = min(8, max(1, cfg["instances"]))
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(refresh_instance, idx, cfg, listening_ports=listening_ports): idx for idx in range(cfg["instances"])}
+            futures = {
+                executor.submit(refresh_instance, idx, cfg, listening_ports=listening_ports): idx
+                for idx in range(cfg["instances"])
+            }
             for future in concurrent.futures.as_completed(futures):
                 idx = futures[future]
                 try:
@@ -1205,13 +1133,14 @@ def refresh_all(force=False):
                     s_ready = listener_present(internal_port, listening_ports=listening_ports)
                     d_ready = listener_present(proxy_port, listening_ports=listening_ports)
                     results[idx + 1] = {
-                   "instance": idx + 1,
+                        "instance": idx + 1,
                         "proxy_port": proxy_port,
                         "internal_port": internal_port,
-                    "egress_ip": cached_item.get("egress_ip"),
-                    "warp": cached_item.get("warp", False),
-                    "warp_connected": cached_item.get("warp_connected", False),
-                    "process_running": p_running,
+                        "engine": "wireproxy",
+                        "egress_ip": cached_item.get("egress_ip"),
+                        "warp": cached_item.get("warp", False),
+                        "warp_connected": cached_item.get("warp_connected", False),
+                        "process_running": p_running,
                         "internal_socks_ready": s_ready,
                         "dedicated_proxy_ready": d_ready,
                         "process_healthy": p_running,
@@ -1224,9 +1153,9 @@ def refresh_all(force=False):
                         "colo": cached_item.get("colo"),
                         "country_code": cached_item.get("country_code"),
                         "country_name": cached_item.get("country_name"),
-                    "location": cached_item.get("location"),
-                    "health": cached_item.get("health", "degraded"),
-                    "last_check": utc_now(),
+                        "location": cached_item.get("location"),
+                        "health": cached_item.get("health", "degraded"),
+                        "last_check": utc_now(),
                         "error": str(exc),
                     }
         STATE["egress"] = results
@@ -1240,42 +1169,47 @@ def get_instances():
     cfg = get_config(False)
     proxy_host = cfg.get("proxy_host_omniroute")
     container_ips = get_container_ips()
+
     now = time.time()
     last = STATE.get("last_refresh_finished")
     if not last or (now - last > cfg["auto_refresh_interval"]):
         if REFRESH_LOCK.acquire(blocking=False):
             REFRESH_LOCK.release()
             threading.Thread(target=refresh_all, kwargs={"force": False}, daemon=True).start()
+
     cached = STATE["egress"]
     items = []
     listening_ports = None
+
     for idx in range(cfg["instances"]):
         existing = cached.get(idx + 1, {})
         proxy_port = cfg["proxy_base_port"] + idx if cfg["proxy_mode"] == "dedicated" else 1080
-        proxy_address = f"{proxy_host}:{proxy_port}" if proxy_host else ""
+        proxy_address = f"{proxy_host}:{proxy_port}" if proxy_host else None
         internal_port = 40000 + idx
+
         if existing:
             is_h = existing.get("health") == "healthy"
             process_running = existing.get("process_running", is_h)
             internal_socks_ready = existing.get("internal_socks_ready", is_h)
             dedicated_proxy_ready = existing.get("dedicated_proxy_ready", is_h)
         else:
-            listening_ports = listening_ports or get_listening_ports()
+            if listening_ports is None:
+                listening_ports = get_listening_ports()
             process_running = instance_process_alive(idx)
             internal_socks_ready = listener_present(internal_port, listening_ports=listening_ports)
             dedicated_proxy_ready = listener_present(proxy_port, listening_ports=listening_ports)
-        wd = get_watchdog_instance(idx)
 
+        wd = get_watchdog_instance(idx)
         item = {
             "instance": idx + 1,
             "proxy_port": proxy_port,
             "internal_port": internal_port,
-            "engine": cfg.get("warp_engine", "wireproxy"),
-            "egress_ip": wd.get("current_egress") if wd else None,
-            "ipv6_egress": (wd.get("ipv6_egress") if wd else None) or (read_egress_json(idx).get("current_ipv6")),
-            "previous_ipv6_egress": (wd.get("previous_ipv6_egress") if wd else None) or (read_egress_json(idx).get("previous_ipv6")),
+            "engine": "wireproxy",
+            "egress_ip": (wd.get("current_egress") if wd else None) or existing.get("egress_ip"),
+            "ipv6_egress": (wd.get("ipv6_egress") if wd else None) or (read_egress_json(idx).get("current_ipv6")) or existing.get("ipv6_egress"),
+            "previous_ipv6_egress": (wd.get("previous_ipv6_egress") if wd else None) or (read_egress_json(idx).get("previous_ipv6")) or existing.get("previous_ipv6_egress"),
             "egress_unique": True,
-            "last_egress_change": (wd.get("last_egress_change") if wd else None) or (read_egress_json(idx).get("last_change")),
+            "last_egress_change": (wd.get("last_egress_change") if wd else None) or (read_egress_json(idx).get("last_change")) or existing.get("last_egress_change"),
             "warp": False,
             "warp_status": "off",
             "warp_connected": False,
@@ -1287,9 +1221,7 @@ def get_instances():
             "country_name": None,
             "location": None,
             "note": get_instance_note(idx),
-            "pss_kb": get_instance_metrics(idx).get("pss_kb"),
-            "rss_kb": get_instance_metrics(idx).get("rss_kb"),
-            "threads": get_instance_metrics(idx).get("threads"),
+            "health": "starting" if process_running and not internal_socks_ready else "offline",
             "process_running": process_running,
             "internal_socks_ready": internal_socks_ready,
             "dedicated_proxy_ready": dedicated_proxy_ready,
@@ -1297,156 +1229,75 @@ def get_instances():
             "proxy_healthy": dedicated_proxy_ready,
             "listener_healthy": dedicated_proxy_ready,
             "internal_healthy": internal_socks_ready,
-            "health": "unknown",
-            "last_check": None,
-            "error": None,
+            "watchdog": wd,
+            "last_check": existing.get("last_check") or utc_now(),
+            "error": existing.get("error"),
         }
-        item.update(existing)
+        item.update({k: v for k, v in existing.items() if v is not None and k not in ("engine", "proxy_host_omniroute", "proxy_address_omniroute", "container_ips", "note")})
+        item["engine"] = "wireproxy"
         item["proxy_port"] = proxy_port
         item["proxy_host_omniroute"] = proxy_host
         item["proxy_address_omniroute"] = proxy_address
-        if "process_running" not in existing:
-            item["process_running"] = item.get("process_healthy", process_running)
-        if "internal_socks_ready" not in existing:
-            item["internal_socks_ready"] = item.get("internal_healthy", internal_socks_ready)
-        if "dedicated_proxy_ready" not in existing:
-            item["dedicated_proxy_ready"] = item.get("proxy_healthy", dedicated_proxy_ready)
-        if "warp_connected" not in existing:
-            item["warp_connected"] = bool(item.get("warp") or item.get("health") == "healthy")
-
-        if wd:
-            item["watchdog"] = {
-                "status": wd.get("status", ""),
-                "consecutive_failures": wd.get("consecutive_failures", 0),
-                "last_check": wd.get("last_check", ""),
-                "last_success": wd.get("last_success", ""),
-                "last_failure": wd.get("last_failure", ""),
-                "last_reconnect": wd.get("last_reconnect", ""),
-                "last_restart": wd.get("last_restart", ""),
-                "reconnect_count": wd.get("reconnect_count", 0),
-                "restart_count": wd.get("restart_count", 0),
-                "recovery_status": wd.get("recovery_status", "none"),
-                "last_error": wd.get("last_error", ""),
-                "previous_egress": wd.get("previous_egress", ""),
-                "current_egress": wd.get("current_egress", ""),
-                "last_egress_change": wd.get("last_egress_change", ""),
-            }
-            if wd.get("current_egress") and not item.get("egress_ip"):
-                item["egress_ip"] = wd["current_egress"]
-
-        wd_status = wd.get("status", "") if wd else ""
-        wd_recovery = wd.get("recovery_status", "none") if wd else "none"
-
-        if wd_recovery not in ("none", "", None) or wd_status == "recovering":
+        item["container_ips"] = container_ips
+        item["note"] = get_instance_note(idx)
+        if wd and wd.get("recovery_status", "none") not in ("none", "", None):
             item["health"] = "recovering"
-        elif wd_status in ("offline", "degraded"):
-            item["health"] = wd_status
-            if wd_status == "offline":
-                item["warp"] = False
-                item["warp_connected"] = False
-        elif item.get("health") == "unknown":
-            p_alive = item.get("process_running", False)
-            s_ready = item.get("internal_socks_ready", False)
-            d_ready = item.get("dedicated_proxy_ready", False)
-            if p_alive and s_ready and d_ready:
-                # Ports are up but we have no trace evidence; do NOT assume healthy
-                item["health"] = "degraded"
-            elif p_alive or s_ready or d_ready:
-                item["health"] = "degraded"
-            else:
-                item["health"] = "unavailable"
-        elif wd_status == "healthy":
-            # Watchdog says healthy (it does real trace checks), trust its warp judgment
-            # but only set warp_connected if we also have cached trace evidence
-            if item.get("warp"):
-                item["health"] = "healthy"
-                item["warp_connected"] = True
-            else:
-                item["health"] = "degraded"
-
-        # warp_connected requires actual trace evidence; never inferred from ports alone
-        if not item.get("warp_connected"):
-            item["warp_connected"] = False
-            item["warp"] = False
-
-        # Enforce exact health criteria:
-        # dedicated requires dedicated_proxy_ready; round-robin does not.
-        is_dedicated = cfg.get("proxy_mode") == "dedicated"
-        proxy_ok = item.get("dedicated_proxy_ready", False) if is_dedicated else True
-        wd_not_failing = (
-            wd_status not in ("offline", "recovering", "degraded")
-            and wd_recovery in ("none", "", None)
-        )
-        if (
-            item.get("warp_connected")
-            and item.get("process_running")
-            and item.get("internal_socks_ready")
-            and proxy_ok
-            and wd_not_failing
-        ):
-            item["health"] = "healthy"
-        elif item.get("health") == "healthy":
-            item["health"] = "degraded"
-
-        item["process_healthy"] = item.get("process_running", False)
-        item["internal_healthy"] = item.get("internal_socks_ready", False)
-        item["proxy_healthy"] = item.get("dedicated_proxy_ready", False)
-        item["listener_healthy"] = item["proxy_healthy"]
-
+        elif wd and wd.get("status") in ("offline", "degraded", "recovering"):
+            item["health"] = wd.get("status")
         items.append(item)
+
     apply_uniqueness_check(items, cfg)
     return items
 
 
 def healthy_verify_dir(cfg):
-    tmp = Path(tempfile.mkdtemp(prefix="warp-verify-"))
-    listening_ports = get_listening_ports()
+    temp = Path(tempfile.mkdtemp(prefix="warp-verify-"))
     for idx in range(cfg["instances"]):
-        if listener_present(40000 + idx, listening_ports=listening_ports):
-            (tmp / str(idx)).write_text("OK\n")
-    return tmp
+        port = 40000 + idx
+        if listener_present(port):
+            (temp / str(idx)).write_text("OK\n")
+    return temp
 
 
-def run_shell_script(script, env):
-    result = subprocess.run(["bash", "-lc", script], env=env, text=True, capture_output=True, timeout=120)
+def run_shell_script(cmd):
+    result = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError((result.stderr or result.stdout).strip())
-    return result.stdout
+        raise RuntimeError(result.stderr.strip() or f"command failed: {cmd}")
 
 
 def regenerate_gost(cfg):
-    env = os.environ.copy()
-    env.update({
-        "WARP_INSTANCES": str(cfg["instances"]),
-        "PROXY_MODE": cfg["proxy_mode"],
-        "PROXY_BASE_PORT": str(cfg["proxy_base_port"]),
-        "PROXY_MAX_RPS": str(cfg["proxy_max_rps"]),
-        "WARP_CONNECT_TIMEOUT": str(cfg["warp_connect_timeout"]),
-        "AUTO_REFRESH_INTERVAL": str(cfg["auto_refresh_interval"]),
-        "PROXY_USER": cfg.get("proxy_user", "") if cfg.get("proxy_auth_enabled") else "",
-        "PROXY_PASS": cfg.get("proxy_password", "") if cfg.get("proxy_auth_enabled") else "",
-    })
-    verify_dir = healthy_verify_dir(cfg)
-    func = "generate_gost_config_dedicated" if cfg["proxy_mode"] == "dedicated" else "generate_gost_config_roundrobin"
+    vdir = healthy_verify_dir(cfg)
     try:
-        run_shell_script(f". {COMMON_SH}; {func} {verify_dir} {GOST_CONFIG_FILE} {HEALTHY_PORTS_FILE}", env)
+        env_exports = (
+            f"WARP_INSTANCES={cfg['instances']} "
+            f"PROXY_MODE={cfg['proxy_mode']} "
+            f"PROXY_BASE_PORT={cfg['proxy_base_port']} "
+            f"PROXY_MAX_RPS={cfg['proxy_max_rps']} "
+            f"PROXY_MAX_CONN={os.environ.get('PROXY_MAX_CONN', '200')} "
+            f"PROXY_LOG_LEVEL={os.environ.get('PROXY_LOG_LEVEL', 'warn')} "
+        )
+        if cfg.get("proxy_auth_enabled") and cfg.get("proxy_user") and cfg.get("proxy_password"):
+            env_exports += f"PROXY_USER={cfg['proxy_user']} PROXY_PASS={cfg['proxy_password']} "
+        if os.environ.get("PROXY_ALLOWED_IPS"):
+            env_exports += f"PROXY_ALLOWED_IPS={os.environ['PROXY_ALLOWED_IPS']} "
+
+        func = "generate_gost_config_dedicated" if cfg["proxy_mode"] == "dedicated" else "generate_gost_config_roundrobin"
+        cmd = f". {COMMON_SH}; {env_exports} {func} '{vdir}' '{GOST_CONFIG_FILE}' '{HEALTHY_PORTS_FILE}'"
+        run_shell_script(cmd)
     finally:
-        subprocess.run(["rm", "-rf", str(verify_dir)])
+        subprocess.run(["rm", "-rf", str(vdir)])
 
 
 def gost_pids():
-    result = subprocess.run(["pgrep", "-x", "gost"], text=True, capture_output=True)
-    if result.returncode != 0:
-        return []
-    return [int(pid) for pid in result.stdout.split()]
+    result = subprocess.run(["pgrep", "-f", "gost.*gost-config.yaml"], capture_output=True, text=True)
+    if result.returncode == 0:
+        return [int(pid) for pid in result.stdout.split() if pid.isdigit()]
+    return []
 
 
 def reload_gost(cfg):
     regenerate_gost(cfg)
-    # GOST v3 does not provide a documented stable config reload path here.
-    # The entrypoint owns GOST as the container's foreground process, so the
-    # admin process requests a GOST-only restart instead of killing it directly.
-    GOST_RESTART_FILE.write_text(utc_now())
+    GOST_RESTART_FILE.write_text("restart\n")
     deadline = time.time() + 20
     target_port = cfg["proxy_base_port"] if cfg["proxy_mode"] == "dedicated" else 1080
     while time.time() < deadline:
@@ -1454,23 +1305,26 @@ def reload_gost(cfg):
             return
         time.sleep(0.5)
     if GOST_RESTART_FILE.exists():
-        raise RuntimeError("timed out waiting for GOST restart")
+        raise RuntimeError("timed out waiting for GOST to restart")
 
 
 def start_instance(index, cfg):
     env = os.environ.copy()
-    env["WARP_ENGINE"] = str(cfg.get("warp_engine", "wireproxy"))
     env["LIGHTWEIGHT_EGRESS_FAMILY"] = str(cfg.get("lightweight_egress_family", "ipv6"))
     env["LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS"] = str(cfg.get("lightweight_require_unique_egress", True)).lower()
-    start_script = Path("/start-warp-instance.sh")
+
+    start_script = Path("/start-wireproxy-instance.sh")
     if not start_script.exists():
-        start_script = Path(__file__).resolve().parents[1] / "start-warp-instance.sh"
+        start_script = Path(__file__).resolve().parents[1] / "start-wireproxy-instance.sh"
+    if not start_script.exists():
+        start_script = Path("/start-warp-instance.sh")
+
     subprocess.Popen(
         [
             str(start_script),
             str(index),
             str(40000 + index),
-            os.environ.get("LICENSE_KEYS_CSV", os.environ.get("WARP_LICENSE_KEY", "")),
+            os.environ.get("LICENSE_KEYS_CSV") or os.environ.get("WARP_LICENSE_KEY", ""),
             str(cfg.get("warp_connect_timeout", 30)),
         ],
         env=env,
@@ -1489,7 +1343,6 @@ def stop_instance(index):
                 pid_file.unlink()
             except FileNotFoundError:
                 pass
-    subprocess.run(["pkill", "-f", f"instance-{index}"], capture_output=True)
     subprocess.run(["pkill", "-f", f"wireproxy.*instance-{index}"], capture_output=True)
 
 
@@ -1510,16 +1363,16 @@ def rollback_config(old_cfg, started_indices, stopped_indices, config_saved):
     for index in stopped_indices:
         start_instance(index, old_cfg)
         if not wait_internal(index, old_cfg["warp_connect_timeout"]):
-            errors.append(f"WARP instance {index + 1} did not come back during rollback")
+            errors.append(f"instance {index + 1} did not come back during rollback")
     if config_saved:
         try:
             write_json_atomic(CONFIG_FILE, old_cfg)
         except Exception as exc:
             errors.append(f"failed to restore admin config: {exc}")
-    try:
-        reload_gost(old_cfg)
-    except Exception as exc:
-        errors.append(f"failed to restore GOST config: {exc}")
+        try:
+            reload_gost(old_cfg)
+        except Exception as exc:
+            errors.append(f"failed to restore GOST config: {exc}")
     return errors
 
 
@@ -1532,14 +1385,7 @@ def apply_config(new_cfg):
 
         old_instances = old_cfg["instances"]
         new_instances = new_cfg["instances"]
-        old_engine = old_cfg.get("warp_engine", "wireproxy")
-        new_engine = new_cfg.get("warp_engine", "wireproxy")
-        engine_changed = old_engine != new_engine
-
-        if engine_changed:
-            total_steps = old_instances + new_instances + 3
-        else:
-            total_steps = abs(new_instances - old_instances) + 3
+        total_steps = abs(new_instances - old_instances) + 3
 
         STATE["operation"] = {
             "status": "running",
@@ -1570,43 +1416,28 @@ def apply_config(new_cfg):
             stopped_indices = []
             config_saved = False
 
-            if engine_changed:
-                for index in range(old_instances):
+            if new_instances > old_instances:
+                for index in range(old_instances, new_instances):
                     step += 1
-                    set_progress(f"Stopping old instance {index + 1}", step)
-                    stop_instance(index)
-                    stopped_indices.append(index)
-                    STATE["egress"].pop(index + 1, None)
-
-                for index in range(new_instances):
-                    step += 1
-                    set_progress(f"Starting instance {index + 1} ({new_engine})", step)
+                    set_progress(f"Starting instance {index + 1}", step)
                     start_instance(index, new_cfg)
                     started_indices.append(index)
                     set_progress(f"Waiting for instance {index + 1}", step)
                     if not wait_internal(index, new_cfg.get("warp_connect_timeout", 30)):
                         raise RuntimeError(f"Instance {index + 1} did not become ready")
-            else:
-                if new_instances > old_instances:
-                    for index in range(old_instances, new_instances):
-                        step += 1
-                        set_progress(f"Starting WARP instance {index + 1}", step)
-                        start_instance(index, new_cfg)
-                        started_indices.append(index)
-                        set_progress(f"Waiting for WARP instance {index + 1}", step)
-                        if not wait_internal(index, new_cfg.get("warp_connect_timeout", 30)):
-                            raise RuntimeError(f"WARP instance {index + 1} did not become ready")
-                elif new_instances < old_instances:
-                    for index in range(new_instances, old_instances):
-                        step += 1
-                        set_progress(f"Stopping WARP instance {index + 1}", step)
-                        stop_instance(index)
-                        stopped_indices.append(index)
-                        STATE["egress"].pop(index + 1, None)
+            elif new_instances < old_instances:
+                for index in range(new_instances, old_instances):
+                    step += 1
+                    set_progress(f"Stopping instance {index + 1}", step)
+                    stop_instance(index)
+                    stopped_indices.append(index)
+                    STATE["egress"].pop(index + 1, None)
 
             step += 1
             set_progress("Saving configuration", step)
-            write_json_atomic(CONFIG_FILE, new_cfg)
+            save_cfg = new_cfg.copy()
+            save_cfg.pop("warp_engine", None)
+            write_json_atomic(CONFIG_FILE, save_cfg)
             config_saved = True
 
             step += 1
@@ -1628,8 +1459,8 @@ def apply_config(new_cfg):
                 write_json_atomic(Path("/tmp/operation-state.json"), STATE["operation"])
             except Exception:
                 pass
-            return {"ok": True, "config": public_config()}, 200
 
+            return {"ok": True, "config": public_config()}, 200
         except Exception as exc:
             rollback_errors = rollback_config(old_cfg, started_indices, stopped_indices, config_saved)
             errors = [str(exc)]
@@ -1662,13 +1493,10 @@ def parse_basic_auth(header):
         return None, None
 
 
-# Country name (from Cloudflare trace 'loc' field, ISO alpha-2) to code mapping
-# is already alpha-2 in the API data, so we just use it directly.
-
 def generate_omniroute_export():
     """Generate OmniRoute Bulk Import Proxies text."""
     cfg = get_config(True)
-    proxy_host = cfg.get("proxy_host_omniroute") or ""
+    proxy_host = cfg.get("proxy_host_omniroute")
     if not proxy_host:
         return {
             "ok": False,
@@ -1683,6 +1511,7 @@ def generate_omniroute_export():
     proxy_auth = cfg.get("proxy_auth_enabled", False)
     proxy_user = cfg.get("proxy_user", "") if proxy_auth else ""
     num_instances = cfg.get("instances", 1)
+
     pad = len(str(num_instances))
     if pad < 2:
         pad = 2
@@ -1690,39 +1519,49 @@ def generate_omniroute_export():
     auth_warning = None
     if proxy_auth and proxy_user:
         auth_warning = (
-            "Proxy authentication is enabled. The export includes the username but "
-            "intentionally leaves the password empty; configure the password "
+            "Proxy authentication is enabled. The export includes username "
+            "but intentionally leaves password empty; configure the password "
             "separately in OmniRoute."
         )
 
     lines = []
+    healthy_count = 0
+    unique_count = 0
     for item in instances:
         idx = item["instance"]
         port = base_port + (idx - 1) if proxy_mode == "dedicated" else 1080
         if port < base_port or port >= base_port + num_instances:
             continue
         health = item.get("health", "unknown")
-        usable = (
-            health == "healthy"
-            and item.get("proxy_healthy") is True
-            and item.get("listener_healthy") is True
-            and item.get("egress_unique", True) is True
-        )
+        is_healthy = health == "healthy" and item.get("proxy_healthy", True) and item.get("listener_healthy", True)
+        if is_healthy:
+            healthy_count += 1
+        if item.get("egress_unique", True) and is_healthy:
+            unique_count += 1
+        usable = is_healthy and item.get("egress_unique", True)
         status = "active" if usable else "inactive"
-
         name = f"WARP-{idx:0{pad}d}"
-        country_code = item.get("country_code") or ""
-        colo = item.get("colo") or ""
+        country_code = item.get("country_code")
+        colo = item.get("colo")
         if country_code and colo:
             region = f"{country_code}-{colo}"
         else:
             region = ""
-
         username = proxy_user if proxy_auth else ""
         note = item.get("note") or ""
         if "|" in note or "\n" in note or "\r" in note:
             note = ""
-        fields = [name, proxy_host, str(port), username, "", "socks5", region, status, note.strip()]
+        fields = [
+            name,
+            proxy_host,
+            str(port),
+            username,
+            "",
+            "socks5",
+            region,
+            status,
+            note.strip(),
+        ]
         line = " | ".join(fields)
         lines.append(line)
 
@@ -1732,6 +1571,9 @@ def generate_omniroute_export():
         "text": text,
         "lines": lines,
         "count": len(lines),
+        "healthy_count": healthy_count,
+        "unique_count": unique_count,
+        "engine": "wireproxy",
         "host": proxy_host,
         "base_port": base_port,
         "port_range": f"{base_port}-{base_port + num_instances - 1}",
@@ -1812,8 +1654,15 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path == "/health":
             self.send_json({"ok": True, "time": utc_now()})
             return
-        if parsed.path.startswith("/api/") and not self.require_auth():
+
+        if not parsed.path.startswith("/api/"):
+            if not self.require_auth():
+                return
+            return super().do_GET()
+
+        if not self.require_auth():
             return
+
         if parsed.path == "/api/config":
             self.send_json(public_config())
         elif parsed.path == "/api/admin/account":
@@ -1827,8 +1676,7 @@ class Handler(SimpleHTTPRequestHandler):
                 set(
                     item.get("ipv6_egress") or item.get("egress_ip")
                     for item in instances
-                    if item["health"] == "healthy"
-                    and (item.get("ipv6_egress") or item.get("egress_ip"))
+                    if item["health"] == "healthy" and (item.get("ipv6_egress") or item.get("egress_ip"))
                 )
             )
             cfg = public_config()
@@ -1837,7 +1685,8 @@ class Handler(SimpleHTTPRequestHandler):
                 op = read_json(Path("/tmp/operation-state.json"), None)
             self.send_json(
                 {
-                    "engine": cfg.get("warp_engine", "wireproxy"),
+                    "mode": "lightweight",
+                    "engine": "wireproxy",
                     "configured_instances": cfg["instances"],
                     "healthy_instances": healthy,
                     "unique_egresses": unique_egresses,
@@ -1856,17 +1705,17 @@ class Handler(SimpleHTTPRequestHandler):
         elif parsed.path == "/api/export/omniroute":
             self.send_json(generate_omniroute_export())
         else:
-            if not self.require_auth():
-                return
-            return super().do_GET()
+            self.send_json({"error": "not found"}, 404)
 
     def do_POST(self):
         parsed = urlparse(self.path)
         if not self.require_auth():
             return
+
         if parsed.path in ("/api/refresh", "/api/instances/refresh"):
             self.send_json(refresh_all(force=True))
             return
+
         if parsed.path == "/api/config":
             try:
                 body = self.read_body()
@@ -1885,7 +1734,6 @@ class Handler(SimpleHTTPRequestHandler):
                 "auto_refresh_interval",
                 "proxy_auth_enabled",
                 "proxy_user",
-                "warp_engine",
                 "lightweight_egress_family",
                 "lightweight_require_unique_egress",
             ):
@@ -1895,17 +1743,21 @@ class Handler(SimpleHTTPRequestHandler):
                 new_cfg["proxy_password"] = body["proxy_password"]
             elif not new_cfg.get("proxy_auth_enabled"):
                 new_cfg["proxy_password"] = ""
+
             try:
                 for key in ("instances", "proxy_base_port", "proxy_max_rps", "warp_connect_timeout", "auto_refresh_interval"):
-                    new_cfg[key] = int(new_cfg[key])
+                    if key in new_cfg:
+                        new_cfg[key] = int(new_cfg[key])
                 if "lightweight_require_unique_egress" in new_cfg:
                     new_cfg["lightweight_require_unique_egress"] = parse_bool(new_cfg["lightweight_require_unique_egress"])
             except (TypeError, ValueError):
                 self.send_json({"ok": False, "errors": ["numeric fields must be valid integers"]}, 400)
                 return
+
             response, status = apply_config(new_cfg)
             self.send_json(response, status)
             return
+
         if parsed.path == "/api/admin/credentials":
             try:
                 body = self.read_body()
@@ -1915,6 +1767,7 @@ class Handler(SimpleHTTPRequestHandler):
             response, status = update_admin_credentials(body)
             self.send_json(response, status)
             return
+
         # POST /api/instances/{id}/reconnect
         m = re.match(r"^/api/instances/(\d+)/reconnect$", parsed.path)
         if m:
@@ -1924,11 +1777,10 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": False, "errors": ["instance not found"]}, 404)
                 return
             index = instance_id - 1
-            def do_reconnect():
-                return manual_reconnect_instance(index)
-            response, status = do_reconnect()
+            response, status = manual_reconnect_instance(index)
             self.send_json(response, status)
             return
+
         # POST /api/instances/{id}/restart
         m = re.match(r"^/api/instances/(\d+)/restart$", parsed.path)
         if m:
@@ -1954,13 +1806,15 @@ class Handler(SimpleHTTPRequestHandler):
             response, status = manual_reprovision_instance(index)
             self.send_json(response, status)
             return
+
         self.send_json({"error": "not found"}, 404)
 
     def do_PATCH(self):
         parsed = urlparse(self.path)
         if not self.require_auth():
             return
-        # # PATCH /api/instances/{id}/note
+
+        # PATCH /api/instances/{id}/note
         m = re.match(r"^/api/instances/(\d+)/note$", parsed.path)
         if m:
             instance_id = int(m.group(1))
@@ -1983,6 +1837,7 @@ class Handler(SimpleHTTPRequestHandler):
             saved = set_instance_note(instance_id - 1, note_text)
             self.send_json({"ok": True, "instance": instance_id, "note": saved})
             return
+
         self.send_json({"error": "not found"}, 404)
 
 

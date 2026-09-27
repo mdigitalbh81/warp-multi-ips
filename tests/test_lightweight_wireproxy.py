@@ -49,7 +49,6 @@ class LightweightWireproxyTests(unittest.TestCase):
         server.ENV_FILE = self.env_file
         server.WATCHDOG_STATE_FILE = self.watchdog_file
         server.HEALTHY_PORTS_FILE = self.healthy_ports_file
-
         server.STATE["egress"] = {}
         server.STATE["operation"] = {"status": "idle"}
         server.STATE["last_refresh_started"] = 0
@@ -70,8 +69,8 @@ class LightweightWireproxyTests(unittest.TestCase):
         server.refresh_all = self.orig_refresh_all
         self.tempdir.cleanup()
 
-    # 1. WARP_ENGINE & EGRESS_FAMILY Validation
-    def test_1_warp_engine_validation(self):
+    # 1. EGRESS_FAMILY and Config Validation
+    def test_1_egress_family_and_config_validation(self):
         base_cfg = {
             "instances": 2,
             "proxy_mode": "dedicated",
@@ -80,34 +79,33 @@ class LightweightWireproxyTests(unittest.TestCase):
             "warp_connect_timeout": 30,
             "auto_refresh_interval": 60,
         }
-
-        # Valid engines
-        errors_official = server.validate_config({**base_cfg, "warp_engine": "official"})
-        self.assertEqual(errors_official, [])
-
-        errors_wireproxy = server.validate_config({**base_cfg, "warp_engine": "wireproxy", "lightweight_egress_family": "ipv6"})
-        self.assertEqual(errors_wireproxy, [])
-
-        # Invalid engine
-        errors_invalid = server.validate_config({**base_cfg, "warp_engine": "invalid_engine"})
-        self.assertTrue(any("warp_engine" in e for e in errors_invalid))
+        # Valid config
+        errors_valid = server.validate_config({**base_cfg, "lightweight_egress_family": "ipv6"})
+        self.assertEqual(errors_valid, [])
 
         # Invalid family
         errors_family = server.validate_config({**base_cfg, "lightweight_egress_family": "invalid_fam"})
         self.assertTrue(any("lightweight_egress_family" in e for e in errors_family))
 
-    # 2. Official Engine Backward Compatibility
-    def test_2_official_engine_backward_compatibility(self):
-        cfg = server.base_config()
-        self.assertEqual(cfg.get("warp_engine"), "official")
-        self.assertEqual(cfg.get("lightweight_egress_family"), "ipv6")
-        self.assertEqual(cfg.get("lightweight_require_unique_egress"), True)
+        # Invalid ports
+        errors_port = server.validate_config({**base_cfg, "proxy_base_port": 70000})
+        self.assertTrue(any("proxy_base_port" in e for e in errors_port))
 
-        # Reprovision should reject official engine
-        resp, status = server.manual_reprovision_instance(0)
-        self.assertEqual(status, 400)
-        self.assertFalse(resp["ok"])
-        self.assertIn("only supported for wireproxy", resp["error"])
+    # 2. Config Migration: legacy warp_engine=official is stripped / migrated
+    def test_2_config_migration_strips_legacy_warp_engine(self):
+        self.config_file.write_text(json.dumps({
+            "instances": 3,
+            "proxy_mode": "dedicated",
+            "proxy_base_port": 2080,
+            "warp_engine": "official",
+        }))
+        server.sync_persisted_config()
+        cfg = server.get_config()
+        self.assertEqual(cfg["instances"], 3)
+        self.assertEqual(cfg["proxy_mode"], "dedicated")
+        # Legacy warp_engine is removed from saved file
+        saved_data = json.loads(self.config_file.read_text())
+        self.assertNotIn("warp_engine", saved_data)
 
     # 3. Wireproxy Config Generation from wgcf profile
     def test_3_wireproxy_config_generation(self):
@@ -174,25 +172,19 @@ AllowedIPs = ::/0
     def test_6_ipv6_uniqueness_and_collision_detection(self):
         cfg = {
             "instances": 3,
-            "warp_engine": "wireproxy",
             "lightweight_require_unique_egress": True,
         }
-
         items = [
             {"instance": 1, "health": "healthy", "ipv6_egress": "2a09:bac5:312c:8fe::1", "egress_unique": True},
             {"instance": 2, "health": "healthy", "ipv6_egress": "2a09:bac5:312c:8fe::2", "egress_unique": True},
-            {"instance": 3, "health": "healthy", "ipv6_egress": "2a09:bac5:312c:8fe::1", "egress_unique": True}, # collision with inst 1
+            {"instance": 3, "health": "healthy", "ipv6_egress": "2a09:bac5:312c:8fe::1", "egress_unique": True},  # collision with inst 1
         ]
-
         server.apply_uniqueness_check(items, cfg)
-
         self.assertTrue(items[0]["egress_unique"])
         self.assertEqual(items[0]["health"], "healthy")
-
         self.assertTrue(items[1]["egress_unique"])
         self.assertEqual(items[1]["health"], "healthy")
-
-        # Instance 3 must be flagged as degraded collision
+        # Instance 3 must be flagged degraded due to collision
         self.assertFalse(items[2]["egress_unique"])
         self.assertEqual(items[2]["health"], "degraded")
         self.assertIn("IPv6 egress collision with instance 1", items[2]["error"])
@@ -254,7 +246,7 @@ AllowedIPs = ::/0
         cfg_file = self.tmp / "gost.yaml"
         healthy_file = self.tmp / "healthy.txt"
 
-        cmd = f". '{ROOT_DIR}/warp-common.sh'; WARP_ENGINE=wireproxy PROXY_LOG_LEVEL=warn WARP_INSTANCES=3 PROXY_BASE_PORT=2080 PROXY_MODE=dedicated generate_gost_config_dedicated '{verify_dir}' '{cfg_file}' '{healthy_file}'"
+        cmd = f". '{ROOT_DIR}/warp-common.sh'; PROXY_LOG_LEVEL=warn WARP_INSTANCES=3 PROXY_BASE_PORT=2080 PROXY_MODE=dedicated generate_gost_config_dedicated '{verify_dir}' '{cfg_file}' '{healthy_file}'"
         res = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)
 
@@ -271,12 +263,12 @@ AllowedIPs = ::/0
         verify_dir = self.tmp / "verify_rr"
         verify_dir.mkdir(parents=True, exist_ok=True)
         (verify_dir / "0").write_text("OK\n")
-        (verify_dir / "2").write_text("OK\n") # 1 is not healthy
+        (verify_dir / "2").write_text("OK\n")  # 1 is not healthy
 
         cfg_file = self.tmp / "gost_rr.yaml"
         healthy_file = self.tmp / "healthy_rr.txt"
 
-        cmd = f". '{ROOT_DIR}/warp-common.sh'; WARP_ENGINE=wireproxy PROXY_LOG_LEVEL=warn WARP_INSTANCES=3 PROXY_BASE_PORT=2080 PROXY_MODE=round-robin generate_gost_config_roundrobin '{verify_dir}' '{cfg_file}' '{healthy_file}'"
+        cmd = f". '{ROOT_DIR}/warp-common.sh'; PROXY_LOG_LEVEL=warn WARP_INSTANCES=3 PROXY_BASE_PORT=2080 PROXY_MODE=round-robin generate_gost_config_roundrobin '{verify_dir}' '{cfg_file}' '{healthy_file}'"
         res = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)
 
@@ -289,30 +281,26 @@ AllowedIPs = ::/0
     def test_11_admin_api_status_fields(self):
         cfg = {
             "instances": 2,
-            "warp_engine": "wireproxy",
             "lightweight_egress_family": "ipv6",
             "lightweight_require_unique_egress": True,
             "proxy_mode": "dedicated",
             "proxy_base_port": 2080,
         }
         self.config_file.write_text(json.dumps(cfg))
-
         server.STATE["egress"] = {
             1: {"instance": 1, "health": "healthy", "ipv6_egress": "2a09::1", "proxy_healthy": True, "listener_healthy": True},
             2: {"instance": 2, "health": "healthy", "ipv6_egress": "2a09::2", "proxy_healthy": True, "listener_healthy": True},
         }
-
         instances = server.get_instances()
         self.assertEqual(len(instances), 2)
         self.assertEqual(instances[0]["engine"], "wireproxy")
         self.assertEqual(instances[0]["ipv6_egress"], "2a09::1")
         self.assertTrue(instances[0]["egress_unique"])
 
-    # 12. OmniRoute Export Wireproxy & Unique Check
+    # 12. OmniRoute Export with Wireproxy Unique Check
     def test_12_omniroute_export_with_wireproxy_uniqueness(self):
         cfg = {
             "instances": 2,
-            "warp_engine": "wireproxy",
             "lightweight_require_unique_egress": True,
             "proxy_mode": "dedicated",
             "proxy_base_port": 2080,
@@ -320,13 +308,11 @@ AllowedIPs = ::/0
             "proxy_auth_enabled": False,
         }
         self.config_file.write_text(json.dumps(cfg))
-
-        # 1 healthy & unique, 1 colliding
+        # 1 healthy unique, 1 colliding
         server.STATE["egress"] = {
             1: {"instance": 1, "health": "healthy", "ipv6_egress": "2a09::1", "proxy_healthy": True, "listener_healthy": True, "egress_unique": True, "country_code": "BR", "colo": "GRU"},
             2: {"instance": 2, "health": "degraded", "ipv6_egress": "2a09::1", "proxy_healthy": True, "listener_healthy": True, "egress_unique": False, "country_code": "BR", "colo": "GRU"},
         }
-
         exp = server.generate_omniroute_export()
         self.assertTrue(exp["ok"])
         lines = exp["lines"]
@@ -334,9 +320,9 @@ AllowedIPs = ::/0
         self.assertIn("active", lines[0])
         self.assertIn("inactive", lines[1])
 
-    # 13. Scale Up and Down Preserves Identities
+    # 13. Scale Down Preserves Identities
     def test_13_scale_up_and_down_preserves_identities(self):
-        # Create profiles for 0..4
+        # Create profiles 0..4
         for idx in range(5):
             d = self.data_dir / "lightweight" / f"instance-{idx}"
             d.mkdir(parents=True, exist_ok=True)
@@ -348,13 +334,13 @@ AllowedIPs = ::/0
             d = self.data_dir / "lightweight" / f"instance-{idx}"
             self.assertEqual((d / "wgcf-account.toml").read_text(), f"token_{idx}")
 
-        # Simulate scale up to 8 by adding 5..7
+        # Simulate scale to 8 by adding 5..7
         for idx in range(5, 8):
             d = self.data_dir / "lightweight" / f"instance-{idx}"
             d.mkdir(parents=True, exist_ok=True)
             (d / "wgcf-account.toml").write_text(f"token_{idx}")
 
-        # Verify initial 0..4 were untouched
+        # Verify initial 0..4 untouched
         for idx in range(5):
             d = self.data_dir / "lightweight" / f"instance-{idx}"
             self.assertEqual((d / "wgcf-account.toml").read_text(), f"token_{idx}")
@@ -365,10 +351,8 @@ AllowedIPs = ::/0
         inst_dir.mkdir(parents=True, exist_ok=True)
         (inst_dir / "wgcf-account.toml").write_text('account_token = "SUPER_SECRET_TOKEN_12345"\n')
         (inst_dir / "wgcf-profile.conf").write_text('PrivateKey = "SUPER_SECRET_PRIVATE_KEY_67890"\n')
-
         cfg = {
             "instances": 1,
-            "warp_engine": "wireproxy",
             "proxy_mode": "dedicated",
             "proxy_base_port": 2080,
             "proxy_host_omniroute": "proxy.example.com",
@@ -377,22 +361,19 @@ AllowedIPs = ::/0
             "proxy_password": "SUPER_SECRET_PASSWORD",
         }
         self.config_file.write_text(json.dumps(cfg))
-
         instances = server.get_instances()
         raw_json = json.dumps(instances)
         self.assertNotIn("SUPER_SECRET_TOKEN", raw_json)
         self.assertNotIn("SUPER_SECRET_PRIVATE_KEY", raw_json)
         self.assertNotIn("SUPER_SECRET_PASSWORD", raw_json)
-
         exp = server.generate_omniroute_export()
         self.assertNotIn("SUPER_SECRET_PASSWORD", exp["text"])
 
-    # 15. Permissions 0700 for dirs and 0600 for files
+    # 15. Permissions 0700 dirs, 0600 files
     def test_15_file_and_directory_permissions(self):
         inst_dir = self.data_dir / "lightweight" / "instance-0"
         inst_dir.mkdir(parents=True, exist_ok=True)
         inst_dir.chmod(0o700)
-
         egress_file = inst_dir / "egress.json"
         server.write_secret_json(egress_file, {"current_ipv6": "2a09::1"})
 
@@ -420,11 +401,43 @@ AllowedIPs = ::/0
             }
         }
         self.watchdog_file.write_text(json.dumps(wd_state))
-
         wd_inst = server.get_watchdog_instance(0)
         self.assertEqual(wd_inst.get("status"), "healthy")
         self.assertEqual(wd_inst.get("ipv6_egress"), "2a09:bac5:312c:8fe::1")
         self.assertEqual(wd_inst.get("warp_status"), "plus")
+
+    # 17. Ensure 0 warp-svc, 0 warp-cli, 0 dbus in runtime
+    def test_17_no_warp_svc_or_dbus_in_runtime_scripts(self):
+        for script_name in ("entrypoint.sh", "watchdog.sh", "warp-common.sh"):
+            script_path = ROOT_DIR / script_name
+            content = script_path.read_text()
+            self.assertNotIn("warp-svc", content, f"warp-svc found in {script_name}")
+            self.assertNotIn("warp-cli", content, f"warp-cli found in {script_name}")
+            self.assertNotIn("dbus-daemon", content, f"dbus-daemon found in {script_name}")
+
+    # 18. Reprovision identity works for wireproxy instance
+    @patch("subprocess.Popen")
+    def test_18_reprovision_creates_fresh_profile(self, mock_popen):
+        inst_dir = self.data_dir / "lightweight" / "instance-0"
+        inst_dir.mkdir(parents=True, exist_ok=True)
+        (inst_dir / "wgcf-account.toml").write_text("old_account")
+        (inst_dir / "wgcf-profile.conf").write_text("old_profile")
+        (inst_dir / "wireproxy.conf").write_text("old_conf")
+        (inst_dir / "egress.json").write_text('{"current_ipv6": "old_ip"}')
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 8888
+        mock_popen.return_value = mock_proc
+
+        server.stop_instance = lambda idx: None
+        server.listener_present = lambda port, listening_ports=None: True
+        server.trace_for_proxy = lambda port, cfg: {"warp": "on", "ip": "2a09::new"}
+        server.refresh_all = lambda force=False: []
+
+        resp, status = server.manual_reprovision_instance(0)
+        self.assertEqual(status, 200)
+        self.assertTrue(resp["ok"])
+        self.assertIn("reprovisioned successfully", resp["message"])
 
 
 if __name__ == "__main__":

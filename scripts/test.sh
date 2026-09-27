@@ -140,15 +140,13 @@ else
 fi
 
 # Test 5: Check WARP connection status
-echo -e "\n${YELLOW}[5/14] Checking WARP connection status...${NC}"
-WARP_STATUS=$(docker exec "$CONTAINER_NAME" warp-cli --accept-tos status 2>&1)
-if echo "$WARP_STATUS" | grep -q "Connected"; then
-    log_success "WARP is connected"
+# Test 5: Check wireproxy status
+echo -e "\n${YELLOW}[5/14] Checking wireproxy status...${NC}"
+if docker exec "$CONTAINER_NAME" pgrep -f wireproxy >/dev/null 2>&1; then
+    log_success "wireproxy is running"
 else
-    log_error "WARP is not connected"
-    echo -e "${RED}Status: $WARP_STATUS${NC}"
+    log_error "wireproxy process not found"
 fi
-
 # Test 6: Check SOCKS5 proxy is listening
 echo -e "\n${YELLOW}[6/14] Checking SOCKS5 proxy...${NC}"
 sleep 2  # Give gost a moment to start

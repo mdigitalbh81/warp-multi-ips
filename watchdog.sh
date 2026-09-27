@@ -1,7 +1,6 @@
 #!/bin/bash
-
-# WARP Instance Watchdog
-# Monitors each WARP instance and attempts recovery when connectivity is lost.
+# WARP Instance Watchdog (wireproxy-only)
+# Monitors each wireproxy instance and attempts recovery when connectivity is lost.
 # Launched by entrypoint.sh as a background process.
 #
 # State is written to /tmp/watchdog-state.json for the admin panel to read.
@@ -19,29 +18,27 @@ fi
 # Explicit container environment tracking
 if [ "${ENV_WARP_INSTANCES_SET:-}" != "true" ] && [ "${ENV_WARP_INSTANCES_SET:-}" != "false" ]; then
     if [ -n "${WARP_INSTANCES+x}" ] && [ -n "$WARP_INSTANCES" ]; then
-    ENV_WARP_INSTANCES_SET="true"
-  else
-    ENV_WARP_INSTANCES_SET="false"
-  fi
+        ENV_WARP_INSTANCES_SET="true"
+    else
+        ENV_WARP_INSTANCES_SET="false"
+    fi
 fi
 
-WARP_INSTANCES=${WARP_INSTANCES:-1}
+WARP_INSTANCES=${WARP_INSTANCES:-10}
 MAX_WARP_INSTANCES=${MAX_WARP_INSTANCES:-45}
 WARP_WATCHDOG_ENABLED=${WARP_WATCHDOG_ENABLED:-true}
 WARP_WATCHDOG_INTERVAL=${WARP_WATCHDOG_INTERVAL:-30}
 WARP_WATCHDOG_FAILURE_THRESHOLD=${WARP_WATCHDOG_FAILURE_THRESHOLD:-3}
 WARP_WATCHDOG_RECOVERY_TIMEOUT=${WARP_WATCHDOG_RECOVERY_TIMEOUT:-30}
 WARP_WATCHDOG_RESTART_COOLDOWN=${WARP_WATCHDOG_RESTART_COOLDOWN:-120}
-
 WATCHDOG_STATE_FILE="/tmp/watchdog-state.json"
-PROXY_MODE=${PROXY_MODE:-round-robin}
+PROXY_MODE=${PROXY_MODE:-dedicated}
 PROXY_BASE_PORT=${PROXY_BASE_PORT:-2080}
-
 WARP_DATA_DIR=${WARP_DATA_DIR:-/var/lib/cloudflare-warp}
 ADMIN_CONFIG_FILE=${ADMIN_CONFIG_FILE:-${WARP_DATA_DIR}/admin-config.json}
 
 # Per-instance runtime state (bash arrays)
-declare -A WD_STATUS            # healthy|degraded|recovering|offline
+declare -A WD_STATUS       # healthy|degraded|recovering|offline
 declare -A WD_CONSECUTIVE_FAILS
 declare -A WD_LAST_CHECK
 declare -A WD_LAST_SUCCESS
@@ -50,27 +47,24 @@ declare -A WD_LAST_RECONNECT
 declare -A WD_LAST_RESTART
 declare -A WD_RECONNECT_COUNT
 declare -A WD_RESTART_COUNT
-declare -A WD_RECOVERY_STATUS   # none|reconnecting|restarting
+declare -A WD_RECOVERY_STATUS  # none|reconnecting|restarting
 declare -A WD_LAST_ERROR
 declare -A WD_PREV_EGRESS
 declare -A WD_CURRENT_EGRESS
 declare -A WD_LAST_EGRESS_CHANGE
-declare -A WD_ENGINE
 declare -A WD_EGRESS_UNIQUE
 declare -A WD_PREV_IPV6
 declare -A WD_CURRENT_IPV6
 declare -A WD_WARP_STATUS
 
 now_iso() {
-    date -u +"%Y-%m-%dT%H:%M:%SZ"
+    date +"%Y-%m-%dT%H:%M:%SZ"
 }
-
 now_epoch() {
     date +%s
 }
-
 log() {
-  echo "[watchdog] $*"
+    echo "[watchdog] $*"
 }
 
 # Re-read instance count from admin config; init state for any new instances
@@ -94,24 +88,29 @@ reload_instance_count() {
             fi
         fi
     fi
-  if [ "$new_count" != "$WARP_INSTANCES" ]; then
-    if [ "$new_count" -gt "$WARP_INSTANCES" ]; then
-      local i
-      for i in $(seq "$WARP_INSTANCES" $((new_count - 1))); do
+    if [ "$new_count" != "$WARP_INSTANCES" ]; then
+        if [ "$new_count" -gt "$WARP_INSTANCES" ]; then
+            local i
+            for i in $(seq "$WARP_INSTANCES" "$((new_count - 1))"); do
                 if [ -z "${WD_STATUS[$i]+x}" ]; then
-                    WD_STATUS[$i]="healthy"; WD_CONSECUTIVE_FAILS[$i]=0; WD_LAST_CHECK[$i]=""
-                    WD_LAST_SUCCESS[$i]=""; WD_LAST_FAILURE[$i]=""; WD_LAST_RECONNECT[$i]=""
-                    WD_LAST_RESTART[$i]=""; WD_RECONNECT_COUNT[$i]=0; WD_RESTART_COUNT[$i]=0
+                    WD_STATUS[$i]="healthy"; WD_CONSECUTIVE_FAILS[$i]=0;
+                    WD_LAST_CHECK[$i]=""
+                    WD_LAST_SUCCESS[$i]=""; WD_LAST_FAILURE[$i]="";
+                    WD_LAST_RECONNECT[$i]=""
+                    WD_LAST_RESTART[$i]=""; WD_RECONNECT_COUNT[$i]=0;
+                    WD_RESTART_COUNT[$i]=0
                     WD_RECOVERY_STATUS[$i]="none"; WD_LAST_ERROR[$i]=""
-                    WD_PREV_EGRESS[$i]=""; WD_CURRENT_EGRESS[$i]=""; WD_LAST_EGRESS_CHANGE[$i]=""
-                    WD_ENGINE[$i]="${WARP_ENGINE:-official}"; WD_EGRESS_UNIQUE[$i]="true"
-                    WD_PREV_IPV6[$i]=""; WD_CURRENT_IPV6[$i]=""; WD_WARP_STATUS[$i]=""
+                    WD_PREV_EGRESS[$i]=""; WD_CURRENT_EGRESS[$i]="";
+                    WD_LAST_EGRESS_CHANGE[$i]=""
+                    WD_EGRESS_UNIQUE[$i]="true"
+                    WD_PREV_IPV6[$i]=""; WD_CURRENT_IPV6[$i]=""
+                    WD_WARP_STATUS[$i]=""
                 fi
             done
         fi
-    log "instance count changed: ${WARP_INSTANCES} -> ${new_count}"
-    WARP_INSTANCES="$new_count"
-  fi
+        log "instance count changed: $WARP_INSTANCES -> ${new_count}"
+        WARP_INSTANCES="$new_count"
+    fi
 }
 
 # Initialize state for all instances
@@ -133,7 +132,6 @@ init_state() {
         WD_PREV_IPV6[$i]=""
         WD_CURRENT_IPV6[$i]=""
         WD_LAST_EGRESS_CHANGE[$i]=""
-        WD_ENGINE[$i]="${WARP_ENGINE:-official}"
         WD_EGRESS_UNIQUE[$i]="true"
         WD_WARP_STATUS[$i]=""
     done
@@ -144,46 +142,46 @@ write_state() {
     local tmp
     tmp=$(mktemp /tmp/watchdog-state.XXXXXX)
     {
-    echo "{"
-    echo "  \"updated\": \"$(now_iso)\","
-    echo "  \"enabled\": ${WARP_WATCHDOG_ENABLED},"
-    echo "  \"interval\": ${WARP_WATCHDOG_INTERVAL},"
-    echo "  \"failure_threshold\": ${WARP_WATCHDOG_FAILURE_THRESHOLD},"
-    echo "  \"recovery_timeout\": ${WARP_WATCHDOG_RECOVERY_TIMEOUT},"
-    echo "  \"restart_cooldown\": ${WARP_WATCHDOG_RESTART_COOLDOWN},"
-    echo "  \"engine\": \"${WARP_ENGINE:-official}\","
-    echo "  \"instances\": {"
-    local first=true
-    for i in $(seq 0 $((WARP_INSTANCES - 1))); do
-        if [ "$first" = true ]; then
-            first=false
-        else
-            echo ","
-        fi
-        cat <<INST
+        echo "{"
+        echo "  \"updated\": \"$(now_iso)\","
+        echo "  \"enabled\": ${WARP_WATCHDOG_ENABLED},"
+        echo "  \"interval\": ${WARP_WATCHDOG_INTERVAL},"
+        echo "  \"failure_threshold\": ${WARP_WATCHDOG_FAILURE_THRESHOLD},"
+        echo "  \"recovery_timeout\": ${WARP_WATCHDOG_RECOVERY_TIMEOUT},"
+        echo "  \"restart_cooldown\": ${WARP_WATCHDOG_RESTART_COOLDOWN},"
+        echo "  \"engine\": \"wireproxy\","
+        echo "  \"instances\": {"
+        local first=true
+        for i in $(seq 0 $((WARP_INSTANCES - 1))); do
+            if [ "$first" = true ]; then
+                first=false
+            else
+                echo ","
+            fi
+            cat <<INST
     "$i": {
-      "status": "${WD_STATUS[$i]:-healthy}",
-      "engine": "${WD_ENGINE[$i]:-${WARP_ENGINE:-official}}",
-      "consecutive_failures": ${WD_CONSECUTIVE_FAILS[$i]:-0},
-      "last_check": "${WD_LAST_CHECK[$i]:-}",
-      "last_success": "${WD_LAST_SUCCESS[$i]:-}",
-      "last_failure": "${WD_LAST_FAILURE[$i]:-}",
-      "last_reconnect": "${WD_LAST_RECONNECT[$i]:-}",
-      "last_restart": "${WD_LAST_RESTART[$i]:-}",
-      "reconnect_count": ${WD_RECONNECT_COUNT[$i]:-0},
-      "restart_count": ${WD_RESTART_COUNT[$i]:-0},
-      "recovery_status": "${WD_RECOVERY_STATUS[$i]:-none}",
-      "last_error": "${WD_LAST_ERROR[$i]:-}",
-      "previous_egress": "${WD_PREV_EGRESS[$i]:-}",
-      "current_egress": "${WD_CURRENT_EGRESS[$i]:-}",
-      "previous_ipv6_egress": "${WD_PREV_IPV6[$i]:-}",
-      "ipv6_egress": "${WD_CURRENT_IPV6[$i]:-}",
-      "egress_unique": ${WD_EGRESS_UNIQUE[$i]:-true},
-      "warp_status": "${WD_WARP_STATUS[$i]:-}",
-      "last_egress_change": "${WD_LAST_EGRESS_CHANGE[$i]:-}"
+        "status": "${WD_STATUS[$i]:-healthy}",
+        "engine": "wireproxy",
+        "consecutive_failures": ${WD_CONSECUTIVE_FAILS[$i]:-0},
+        "last_check": "${WD_LAST_CHECK[$i]:-}",
+        "last_success": "${WD_LAST_SUCCESS[$i]:-}",
+        "last_failure": "${WD_LAST_FAILURE[$i]:-}",
+        "last_reconnect": "${WD_LAST_RECONNECT[$i]:-}",
+        "last_restart": "${WD_LAST_RESTART[$i]:-}",
+        "reconnect_count": ${WD_RECONNECT_COUNT[$i]:-0},
+        "restart_count": ${WD_RESTART_COUNT[$i]:-0},
+        "recovery_status": "${WD_RECOVERY_STATUS[$i]:-none}",
+        "last_error": "${WD_LAST_ERROR[$i]:-}",
+        "previous_egress": "${WD_PREV_EGRESS[$i]:-}",
+        "current_egress": "${WD_CURRENT_EGRESS[$i]:-}",
+        "previous_ipv6_egress": "${WD_PREV_IPV6[$i]:-}",
+        "ipv6_egress": "${WD_CURRENT_IPV6[$i]:-}",
+        "egress_unique": ${WD_EGRESS_UNIQUE[$i]:-true},
+        "warp_status": "${WD_WARP_STATUS[$i]:-}",
+        "last_egress_change": "${WD_LAST_EGRESS_CHANGE[$i]:-}"
     }
 INST
-    done
+        done
         echo ""
         echo "  }"
         echo "}"
@@ -192,8 +190,6 @@ INST
 }
 
 # Check instance health via its internal SOCKS5 proxy
-# Returns 0 if healthy, 1 if unhealthy
-# Sets HEALTH_CHECK_EGRESS as side-effect
 HEALTH_CHECK_EGRESS=""
 HEALTH_CHECK_IPV6=""
 HEALTH_CHECK_WARP=""
@@ -201,7 +197,6 @@ check_instance_health() {
     local instance=$1
     local port=$((40000 + instance))
     local trace_output
-
     HEALTH_CHECK_EGRESS=""
     HEALTH_CHECK_IPV6=""
     HEALTH_CHECK_WARP=""
@@ -209,24 +204,23 @@ check_instance_health() {
     trace_output=$(curl \
         --socks5-hostname "127.0.0.1:${port}" \
         --max-time 10 \
-        -s \
+        -fsS \
         "https://www.cloudflare.com/cdn-cgi/trace" 2>/dev/null) || return 1
 
     if echo "$trace_output" | grep -qE '^warp=(on|plus)'; then
         HEALTH_CHECK_WARP=$(echo "$trace_output" | grep '^warp=' | head -n1 | cut -d= -f2)
-        # Extract egress IP
         HEALTH_CHECK_EGRESS=$(echo "$trace_output" | grep '^ip=' | head -n1 | cut -d= -f2)
-        if [ "${WARP_ENGINE:-official}" = "wireproxy" ]; then
-            local ip6
-            ip6=$(curl -fsS --max-time 6 --socks5-hostname "127.0.0.1:${port}" https://api6.ipify.org 2>/dev/null || true)
-            if [ -n "$ip6" ]; then
-                HEALTH_CHECK_IPV6="$ip6"
-                if [ "${LIGHTWEIGHT_EGRESS_FAMILY:-ipv6}" = "ipv6" ]; then
-                    HEALTH_CHECK_EGRESS="$ip6"
-                fi
-            elif [ -n "$HEALTH_CHECK_EGRESS" ] && [[ "$HEALTH_CHECK_EGRESS" == *:* ]]; then
-                HEALTH_CHECK_IPV6="$HEALTH_CHECK_EGRESS"
+
+        local ip6
+        ip6=$(curl -fsS --max-time 6 --socks5-hostname "127.0.0.1:${port}" \
+            "https://api6.ipify.org" 2>/dev/null || true)
+        if [ -n "$ip6" ]; then
+            HEALTH_CHECK_IPV6="$ip6"
+            if [ "${LIGHTWEIGHT_EGRESS_FAMILY:-ipv6}" = "ipv6" ]; then
+                HEALTH_CHECK_EGRESS="$ip6"
             fi
+        elif [ -n "$HEALTH_CHECK_EGRESS" ] && [[ "$HEALTH_CHECK_EGRESS" == *:* ]]; then
+            HEALTH_CHECK_IPV6="$HEALTH_CHECK_EGRESS"
         fi
         return 0
     fi
@@ -234,7 +228,7 @@ check_instance_health() {
 }
 
 validate_all_uniqueness() {
-    if [ "${WARP_ENGINE:-official}" != "wireproxy" ] || [ "${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-true}" != "true" ]; then
+    if [ "${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-true}" != "true" ]; then
         return 0
     fi
     declare -A seen_ip6
@@ -255,56 +249,7 @@ validate_all_uniqueness() {
     done
 }
 
-# Run warp-cli for a specific instance
-instance_wcli() {
-    local instance=$1
-    shift
-    local run_dir="/run/warp-${instance}"
-    local dbus_sock="/run/dbus-${instance}/system_bus_socket"
-    sudo env \
-        RUNTIME_DIRECTORY="$run_dir" \
-        DBUS_SYSTEM_BUS_ADDRESS="unix:path=${dbus_sock}" \
-        warp-cli --accept-tos "$@"
-}
-
-# Attempt a light reconnect for a specific instance
-try_reconnect() {
-    local instance=$1
-    if [ "${WARP_ENGINE:-official}" = "wireproxy" ]; then
-        restart_instance_wireproxy "$instance"
-        return $?
-    fi
-    log "instance ${instance} reconnect requested"
-    WD_RECOVERY_STATUS[$instance]="reconnecting"
-    WD_LAST_RECONNECT[$instance]=$(now_iso)
-    WD_RECONNECT_COUNT[$instance]=$(( ${WD_RECONNECT_COUNT[$instance]} + 1 ))
-    write_state
-
-    # Execute reconnect
-    instance_wcli "$instance" connect 2>/dev/null || true
-
-    # Wait for recovery
-    local elapsed=0
-    while [ "$elapsed" -lt "$WARP_WATCHDOG_RECOVERY_TIMEOUT" ]; do
-        sleep 3
-        elapsed=$((elapsed + 3))
-        if check_instance_health "$instance"; then
-            log "instance ${instance} reconnect successful"
-            WD_STATUS[$instance]="healthy"
-            WD_CONSECUTIVE_FAILS[$instance]=0
-            WD_RECOVERY_STATUS[$instance]="none"
-            WD_LAST_SUCCESS[$instance]=$(now_iso)
-            WD_LAST_ERROR[$instance]=""
-            update_egress "$instance"
-            write_state
-            return 0
-        fi
-    done
-
-    log "instance ${instance} reconnect failed"
-    return 1
-}
-
+# Stop wireproxy for a specific instance
 stop_instance_wireproxy() {
     local instance=$1
     local pid_file="/tmp/wireproxy-instance-${instance}.pid"
@@ -321,12 +266,13 @@ stop_instance_wireproxy() {
             done
             kill -9 "$pid" 2>/dev/null || true
         fi
-        rm -f "$pid_file" "$warp_pid_file" 2>/dev/null || true
     fi
+    rm -f "$pid_file" "$warp_pid_file" 2>/dev/null || true
     pkill -f "wireproxy.*instance-${instance}" 2>/dev/null || true
     sleep 1
 }
 
+# Restart wireproxy for a specific instance
 restart_instance_wireproxy() {
     local instance=$1
     local port=$((40000 + instance))
@@ -335,7 +281,7 @@ restart_instance_wireproxy() {
     local conf_file="${data_dir}/wireproxy.conf"
     local pid_file="/tmp/wireproxy-instance-${instance}.pid"
     local warp_pid_file="/tmp/warp-instance-${instance}.pid"
-    
+
     log "instance ${instance} restarting wireproxy"
     WD_RECOVERY_STATUS[$instance]="restarting"
     WD_LAST_RESTART[$instance]=$(now_iso)
@@ -343,9 +289,9 @@ restart_instance_wireproxy() {
     write_state
 
     stop_instance_wireproxy "$instance"
-    
-    if [ ! -f "$conf_file" ] && [ -f "$profile_file" ]; then
-        grep -v -E '^\[Socks5\]|^BindAddress' "$profile_file" > "$conf_file"
+
+    if [ -f "$profile_file" ]; then
+        grep -vE '^\[Socks5\]|^BindAddress' "$profile_file" > "$conf_file"
         cat <<EOF >> "$conf_file"
 
 [Socks5]
@@ -353,7 +299,7 @@ BindAddress = 127.0.0.1:${port}
 EOF
         chmod 600 "$conf_file" 2>/dev/null || true
     fi
-    
+
     if [ -f "$conf_file" ]; then
         wireproxy -c "$conf_file" >/dev/null 2>&1 &
         local new_pid=$!
@@ -362,12 +308,12 @@ EOF
         log "instance ${instance} wireproxy restarted (PID: ${new_pid})"
     else
         if [ -f "/start-wireproxy-instance.sh" ]; then
-            /start-wireproxy-instance.sh "$instance" "$port" "${WARP_CONNECT_TIMEOUT:-30}" >/dev/null 2>&1 &
+            /start-wireproxy-instance.sh "$instance" "$port" "" "${WARP_CONNECT_TIMEOUT:-30}" >/dev/null 2>&1 &
         elif [ -f "$(dirname "${BASH_SOURCE[0]}")/start-wireproxy-instance.sh" ]; then
-            "$(dirname "${BASH_SOURCE[0]}")/start-wireproxy-instance.sh" "$instance" "$port" "${WARP_CONNECT_TIMEOUT:-30}" >/dev/null 2>&1 &
+            "$(dirname "${BASH_SOURCE[0]}")/start-wireproxy-instance.sh" "$instance" "$port" "" "${WARP_CONNECT_TIMEOUT:-30}" >/dev/null 2>&1 &
         fi
     fi
-    
+
     local elapsed=0
     while [ "$elapsed" -lt "$WARP_WATCHDOG_RECOVERY_TIMEOUT" ]; do
         sleep 3
@@ -381,117 +327,6 @@ EOF
             WD_LAST_ERROR[$instance]=""
             update_egress "$instance"
             validate_all_uniqueness
-            write_state
-            return 0
-        fi
-    done
-    
-    log "instance ${instance} restart did not restore health"
-    WD_STATUS[$instance]="offline"
-    WD_RECOVERY_STATUS[$instance]="none"
-    WD_LAST_ERROR[$instance]="restart failed to restore connectivity"
-    write_state
-    return 1
-}
-
-# Stop only the warp-svc for a specific instance
-stop_instance_warp() {
-    local instance=$1
-    local pid_file="/tmp/warp-instance-${instance}.pid"
-
-    if [ -f "$pid_file" ]; then
-        local pid
-        pid=$(cat "$pid_file" 2>/dev/null || true)
-        if [ -n "$pid" ]; then
-            sudo kill "$pid" 2>/dev/null || true
-            # Wait briefly for clean shutdown
-            local wait=0
-            while [ "$wait" -lt 10 ] && sudo kill -0 "$pid" 2>/dev/null; do
-                sleep 1
-                wait=$((wait + 1))
-            done
-            # Force kill if still alive
-            sudo kill -9 "$pid" 2>/dev/null || true
-        fi
-    fi
-
-    # Also kill by matching environment pattern
-    sudo pkill -f "STATE_DIRECTORY=/var/lib/cloudflare-warp/instance-${instance}[^0-9]" 2>/dev/null || true
-    sudo pkill -f "STATE_DIRECTORY=/var/lib/cloudflare-warp/instance-${instance}$" 2>/dev/null || true
-    sleep 1
-}
-
-# Restart only the warp-svc for a specific instance, preserving state
-restart_instance_warp() {
-    local instance=$1
-    local port=$((40000 + instance))
-    local data_dir="/var/lib/cloudflare-warp/instance-${instance}"
-    local run_dir="/run/warp-${instance}"
-    local dbus_dir="/run/dbus-${instance}"
-    local dbus_sock="${dbus_dir}/system_bus_socket"
-    local pid_file="/tmp/warp-instance-${instance}.pid"
-
-    log "instance ${instance} restarting warp-svc"
-    WD_RECOVERY_STATUS[$instance]="restarting"
-    WD_LAST_RESTART[$instance]=$(now_iso)
-    WD_RESTART_COUNT[$instance]=$(( ${WD_RESTART_COUNT[$instance]} + 1 ))
-    write_state
-
-    # Stop the existing warp-svc
-    stop_instance_warp "$instance"
-
-    # Ensure directories still exist
-    sudo mkdir -p "$data_dir" "$run_dir" "$dbus_dir"
-
-    # Check if D-Bus daemon is still running, restart if needed
-    if [ ! -S "$dbus_sock" ]; then
-        log "instance ${instance} restarting D-Bus daemon"
-        sudo dbus-daemon \
-            --address="unix:path=${dbus_sock}" \
-            --config-file=/usr/share/dbus-1/system.conf \
-            --nopidfile --nofork >/dev/null 2>&1 &
-        sleep 1
-    fi
-
-    # Start warp-svc with same paths (preserves reg.json and state)
-    sudo env \
-        STATE_DIRECTORY="$data_dir" \
-        RUNTIME_DIRECTORY="$run_dir" \
-        DBUS_SYSTEM_BUS_ADDRESS="unix:path=${dbus_sock}" \
-        warp-svc --accept-tos > >(filter_warp_logs) 2>&1 &
-    local new_pid=$!
-    echo "$new_pid" > "$pid_file"
-
-    log "instance ${instance} warp-svc restarted (PID: ${new_pid})"
-
-    # Wait for the daemon to become ready
-    local elapsed=0
-    while [ "$elapsed" -lt "$WARP_WATCHDOG_RECOVERY_TIMEOUT" ]; do
-        if instance_wcli "$instance" status 2>/dev/null | grep -qE '(Status|Connected)'; then
-            break
-        fi
-        sleep 2
-        elapsed=$((elapsed + 2))
-    done
-
-    # Reconnect (warp-svc needs connect after restart)
-    instance_wcli "$instance" mode proxy 2>/dev/null || true
-    instance_wcli "$instance" proxy port "$port" 2>/dev/null || true
-    instance_wcli "$instance" connect 2>/dev/null || true
-
-    # Wait and verify
-    elapsed=0
-    while [ "$elapsed" -lt "$WARP_WATCHDOG_RECOVERY_TIMEOUT" ]; do
-        sleep 3
-        elapsed=$((elapsed + 3))
-        if check_instance_health "$instance"; then
-            log "instance ${instance} healthy again"
-            WD_STATUS[$instance]="healthy"
-            WD_CONSECUTIVE_FAILS[$instance]=0
-            WD_RECOVERY_STATUS[$instance]="none"
-            WD_LAST_SUCCESS[$instance]=$(now_iso)
-            WD_LAST_ERROR[$instance]=""
-            update_egress "$instance"
             write_state
             return 0
         fi
@@ -535,7 +370,7 @@ update_egress() {
             local egress_file="${egress_dir}/egress.json"
             local now_iso
             now_iso=$(now_iso)
-            python3 -c "import json, sys; json.dump({'current_ipv6': sys.argv[1], 'previous_ipv6': sys.argv[2], 'last_change': sys.argv[3]}, open(sys.argv[4], 'w'), indent=2)" \
+            python3 -c "import json, sys;json.dump({'current_ipv6': sys.argv[1], 'previous_ipv6': sys.argv[2], 'last_change': sys.argv[3]},open(sys.argv[4], 'w'),indent=2)" \
                 "$new_ip6" "${WD_PREV_IPV6[$instance]}" "${WD_LAST_EGRESS_CHANGE[$instance]:-$now_iso}" "$egress_file" 2>/dev/null || true
             chmod 600 "$egress_file" 2>/dev/null || true
         fi
@@ -575,7 +410,7 @@ process_instance() {
     if check_instance_health "$instance"; then
         # Healthy
         if [ "${WD_CONSECUTIVE_FAILS[$instance]}" -gt 0 ]; then
-            log "instance ${instance} recovered (was at ${WD_CONSECUTIVE_FAILS[$instance]} consecutive failures)"
+            log "instance ${instance} recovered (was ${WD_CONSECUTIVE_FAILS[$instance]} consecutive failures)"
         fi
         WD_CONSECUTIVE_FAILS[$instance]=0
         WD_STATUS[$instance]="healthy"
@@ -587,13 +422,12 @@ process_instance() {
         WD_CONSECUTIVE_FAILS[$instance]=$(( ${WD_CONSECUTIVE_FAILS[$instance]} + 1 ))
         WD_LAST_FAILURE[$instance]=$(now_iso)
         local fails=${WD_CONSECUTIVE_FAILS[$instance]}
-
         log "instance ${instance} check failed (${fails}/${WARP_WATCHDOG_FAILURE_THRESHOLD})"
 
         if [ "$fails" -lt "$WARP_WATCHDOG_FAILURE_THRESHOLD" ]; then
             WD_STATUS[$instance]="degraded"
         else
-            # Threshold reached - enter recovery
+            # Threshold reached -> enter recovery
             log "instance ${instance} entering recovery"
             WD_STATUS[$instance]="recovering"
 
@@ -604,12 +438,7 @@ process_instance() {
                     return
                 }
 
-                # Step 1: Try reconnect
-                if try_reconnect "$instance"; then
-                    return
-                fi
-
-                # Step 2: Full restart if not in cooldown
+                # Restart wireproxy
                 if in_restart_cooldown "$instance"; then
                     log "instance ${instance} in restart cooldown, skipping restart"
                     WD_STATUS[$instance]="offline"
@@ -618,15 +447,12 @@ process_instance() {
                     return
                 fi
 
-                if [ "${WARP_ENGINE:-official}" = "wireproxy" ]; then
-                    restart_instance_wireproxy "$instance"
-                else
-                    restart_instance_warp "$instance"
-                fi
+                restart_instance_wireproxy "$instance"
 
             ) 200>"$lockfile"
         fi
     fi
+
     write_state
 }
 
@@ -634,8 +460,8 @@ process_instance() {
 main() {
     if [ "$WARP_WATCHDOG_ENABLED" != "true" ]; then
         log "watchdog disabled"
-        # Write an initial disabled state
-        WARP_INSTANCES=${WARP_INSTANCES} write_state
+        WARP_INSTANCES=${WARP_INSTANCES:-10}
+        write_state
         exit 0
     fi
 
@@ -650,7 +476,7 @@ main() {
     init_state
     write_state
 
-    # Initial grace period - let instances stabilize
+    # Initial grace period to let instances stabilize
     sleep "$WARP_WATCHDOG_INTERVAL"
 
     while true; do
@@ -665,5 +491,5 @@ main() {
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-  main "$@"
+    main "$@"
 fi
