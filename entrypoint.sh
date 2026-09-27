@@ -258,15 +258,20 @@ echo ""
 
 # ---- cleanup on shutdown ----
 cleanup() {
+    trap - SIGTERM SIGINT
     echo "Shutting down ${WARP_INSTANCES} wireproxy instances..."
     for pid in "${INSTANCE_PIDS[@]}"; do
         kill "$pid" 2>/dev/null || true
     done
     sudo pkill -f "wireproxy" 2>/dev/null || true
-    kill "$ADMIN_PID" 2>/dev/null || true
-    kill "$GOST_PID" 2>/dev/null || true
-    kill "$WATCHDOG_PID" 2>/dev/null || true
-    wait
+    [ -n "${ADMIN_PID:-}" ] && kill "$ADMIN_PID" 2>/dev/null || true
+    [ -n "${GOST_PID:-}" ] && kill "$GOST_PID" 2>/dev/null || true
+    [ -n "${WATCHDOG_PID:-}" ] && kill "$WATCHDOG_PID" 2>/dev/null || true
+    for pid in "${INSTANCE_PIDS[@]}" "${ADMIN_PID:-}" "${GOST_PID:-}" "${WATCHDOG_PID:-}"; do
+        [ -n "$pid" ] || continue
+        wait "$pid" 2>/dev/null || true
+    done
+    exit 0
 }
 trap cleanup SIGTERM SIGINT
 
