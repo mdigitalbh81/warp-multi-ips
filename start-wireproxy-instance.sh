@@ -55,12 +55,12 @@ if [ ! -f "$ACCOUNT_FILE" ] || [ ! -f "$PROFILE_FILE" ]; then
         # Capture stderr/stdout to a temporary file so failures are diagnosable
         # without printing account/profile secrets.
         REG_LOG=$(mktemp)
-        if wgcf register >"$REG_LOG" 2>&1; then
+        if wgcf --config "$ACCOUNT_FILE" register --accept-tos >"$REG_LOG" 2>&1; then
             rm -f "$REG_LOG"
             REG_OK=true
             break
         fi
-        REG_ERROR=$(tail -n 3 "$REG_LOG" 2>/dev/null | tr '\n' ' ' | sed -E 's/(license|token|private[_ -]?key|key)[=: ][^ ]+/<redacted>/Ig')
+        REG_ERROR=$(grep -vE '^[[:space:]]*(github\.com/|runtime/|goroutine |Wraps:|Error types:|\||[0-9]+:)' "$REG_LOG" 2>/dev/null | head -n 4 | tr '\n' ' ' | sed -E 's/(license|token|access[_ -]?token|private[_ -]?key|key)[=: ][^ ]+/<redacted>/Ig')
         rm -f "$REG_LOG"
         [ -n "$REG_ERROR" ] && echo "[Instance ${INSTANCE}] wgcf register error: ${REG_ERROR}"
         BACKOFF=$(( (1 << attempt) + (RANDOM % (1 << attempt)) ))
