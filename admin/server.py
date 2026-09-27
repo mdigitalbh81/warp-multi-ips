@@ -526,7 +526,7 @@ def resolve_proxy_host_omniroute(env, stored=None):
         return os.environ.get("PROXY_HOST_OMNIROUTE", "").strip()
     if nonempty(os.environ.get("PROXY_HOST")):
         return os.environ.get("PROXY_HOST", "").strip()
-    return ""
+    return "omniroute_warp-proxy"
 
 
 def is_explicit_env(env_key):
@@ -621,7 +621,7 @@ def base_config():
     env = read_env_file()
     return {
         "proxy_host_omniroute": resolve_proxy_host_omniroute(env),
-        "instances": int(env.get("WARP_INSTANCES") or os.environ.get("WARP_INSTANCES", "1")),
+        "instances": int(env.get("WARP_INSTANCES") or os.environ.get("WARP_INSTANCES", "10")),
         "proxy_mode": env.get("PROXY_MODE") or os.environ.get("PROXY_MODE", "dedicated"),
         "proxy_base_port": int(env.get("PROXY_BASE_PORT") or os.environ.get("PROXY_BASE_PORT", "2080")),
         "proxy_max_rps": int(env.get("PROXY_MAX_RPS") or os.environ.get("PROXY_MAX_RPS", "50")),
@@ -642,7 +642,7 @@ def get_config(include_secret=False):
     stored = read_json(CONFIG_FILE, {})
     cfg = {
         "proxy_host_omniroute": resolve_proxy_host_omniroute(env, stored),
-        "instances": resolve_config_field(env, stored, "WARP_INSTANCES", "instances", 1, int, min_val=1),
+        "instances": resolve_config_field(env, stored, "WARP_INSTANCES", "instances", 10, int, min_val=1),
         "proxy_mode": resolve_config_field(env, stored, "PROXY_MODE", "proxy_mode", "dedicated", str),
         "proxy_base_port": resolve_config_field(env, stored, "PROXY_BASE_PORT", "proxy_base_port", 2080, int, min_val=1),
         "proxy_max_rps": resolve_config_field(env, stored, "PROXY_MAX_RPS", "proxy_max_rps", 50, int, min_val=1),
