@@ -29,6 +29,11 @@ ENV_AUTO_REFRESH_INTERVAL="${AUTO_REFRESH_INTERVAL+x}"
 ENV_AUTO_REFRESH_INTERVAL_VALUE="${AUTO_REFRESH_INTERVAL:-}"
 ENV_PROXY_HOST_OMNIROUTE="${PROXY_HOST_OMNIROUTE:-${PROXY_HOST:-}}"
 
+# Persistent volume may come from older root-owned deployments. Fix ownership
+# before reading, migrating or creating admin/lightweight state.
+sudo mkdir -p "${WARP_DATA_DIR:-/var/lib/cloudflare-warp}"
+sudo chown -R warp:warp "${WARP_DATA_DIR:-/var/lib/cloudflare-warp}" 2>/dev/null || true
+
 init_admin_config
 load_admin_config
 validate_runtime_config
@@ -65,7 +70,6 @@ EOF
 
 ADMIN_PID=""
 if [ "${ADMIN_ENABLED:-false}" = "true" ]; then
-    sudo chown -R warp:warp /var/lib/cloudflare-warp 2>/dev/null || true
     write_admin_env_file
     write_op_state "running" "Starting admin panel and initializing instances..." 0 "${WARP_INSTANCES:-10}"
     echo "Starting admin panel on :${ADMIN_PORT:-9090}"
