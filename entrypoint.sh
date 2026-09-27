@@ -101,14 +101,36 @@ for i in $(seq 0 $((WARP_INSTANCES - 1))); do
     PORT=$((40000 + i))
     write_op_state "running" "Starting instance $((i + 1))/${WARP_INSTANCES}..." "$((i + 1))" "$WARP_INSTANCES"
 
+    LW_DIR="${WARP_DATA_DIR:-/var/lib/cloudflare-warp}/lightweight/instance-${i}"
+    NEEDS_REGISTRATION=false
+    if [ ! -f "$LW_DIR/wgcf-profile.conf" ]; then
+        NEEDS_REGISTRATION=true
+    fi
+
     /start-wireproxy-instance.sh \
         "$i" "$PORT" "" "${WARP_CONNECT_TIMEOUT:-30}" &
-    INSTANCE_PIDS+=($!)
+    INSTANCE_PID=$!
+    INSTANCE_PIDS+=("$INSTANCE_PID")
 
-    LW_DIR="${WARP_DATA_DIR:-/var/lib/cloudflare-warp}/lightweight/instance-${i}"
-    if [ ! -f "$LW_DIR/wgcf-profile.conf" ]; then
+    # First-time wgcf registrations must be serialized. Starting all devices
+    # concurrently can trigger Cloudflare/API failures and makes debugging hard.
+    if [ "$NEEDS_REGISTRATION" = true ]; then
+        REG_WAIT=0
+        REG_WAIT_MAX=180
+        while [ "$REG_WAIT" -lt "$REG_WAIT_MAX" ]; do
+            if [ -f "$LW_DIR/wgcf-profile.conf" ]; then
+                echo "  Instance $((i + 1)) registration/profile ready"
+                break
+            fi
+            if ! kill -0 "$INSTANCE_PID" 2>/dev/null; then
+                echo "  Instance $((i + 1)) provisioning process exited before profile creation"
+                break
+            fi
+            sleep 2
+            REG_WAIT=$((REG_WAIT + 2))
+        done
         if [ "$i" -lt $((WARP_INSTANCES - 1)) ]; then
-            sleep "${LIGHTWEIGHT_REGISTRATION_DELAY:-10}"
+            sleep "${LIGHTWEIGHT_REGISTRATION_DELAY:-2}"
         fi
     else
         sleep 0.5
