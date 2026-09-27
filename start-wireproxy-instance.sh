@@ -51,11 +51,18 @@ if [ ! -f "$ACCOUNT_FILE" ] || [ ! -f "$PROFILE_FILE" ]; then
     MAX_REG_ATTEMPTS=10
     for attempt in $(seq 1 $MAX_REG_ATTEMPTS); do
         echo "[Instance ${INSTANCE}] Registration attempt ${attempt}/${MAX_REG_ATTEMPTS}..."
-        # Run wgcf register without exposing secrets to console
-        if wgcf register --accept-tos >/dev/null 2>&1; then
+        # wgcf v2.2.32 registration syntax is simply: wgcf register
+        # Capture stderr/stdout to a temporary file so failures are diagnosable
+        # without printing account/profile secrets.
+        REG_LOG=$(mktemp)
+        if wgcf register >"$REG_LOG" 2>&1; then
+            rm -f "$REG_LOG"
             REG_OK=true
             break
         fi
+        REG_ERROR=$(tail -n 3 "$REG_LOG" 2>/dev/null | tr '\n' ' ' | sed -E 's/(license|token|private[_ -]?key|key)[=: ][^ ]+/<redacted>/Ig')
+        rm -f "$REG_LOG"
+        [ -n "$REG_ERROR" ] && echo "[Instance ${INSTANCE}] wgcf register error: ${REG_ERROR}"
         BACKOFF=$(( (1 << attempt) + (RANDOM % (1 << attempt)) ))
         if [ $BACKOFF -gt 60 ]; then
             BACKOFF=60
