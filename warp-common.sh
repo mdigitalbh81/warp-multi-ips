@@ -559,7 +559,7 @@ generate_gost_config_roundrobin() {
     local healthy_file="${3:-$HEALTHY_PORTS_FILE}"
     local ss_pass="${PROXY_PASS:-cloudflare-warp}"
     local ss_method="${SS_METHOD:-chacha20-ietf-poly1305}"
-    local climiter_val="${PROXY_MAX_CONN:-10}"
+    local climiter_val="${PROXY_MAX_CONN:-200}"
     local rlimiter_val="${PROXY_MAX_RPS:-50}"
     local proxy_auth
     local admission_ref
@@ -685,7 +685,7 @@ generate_gost_config_dedicated() {
     local healthy_file="${3:-$HEALTHY_PORTS_FILE}"
     local ss_pass="${PROXY_PASS:-cloudflare-warp}"
     local ss_method="${SS_METHOD:-chacha20-ietf-poly1305}"
-    local climiter_val="${PROXY_MAX_CONN:-10}"
+    local climiter_val="${PROXY_MAX_CONN:-200}"
     local rlimiter_val="${PROXY_MAX_RPS:-50}"
     local proxy_auth
     local admission_ref
