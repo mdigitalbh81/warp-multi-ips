@@ -21,6 +21,7 @@ services:
       - "2080-2124:2080-2124"
 
     environment:
+      WARP_ENGINE: "wireproxy"
       WARP_INSTANCES: "${WARP_INSTANCES:-20}"
       PROXY_MODE: "dedicated"
       PROXY_BASE_PORT: "2080"
@@ -29,6 +30,8 @@ services:
       PROXY_MAX_RPS: "50"
 
       WARP_CONNECT_TIMEOUT: "90"
+      LIGHTWEIGHT_EGRESS_FAMILY: "${LIGHTWEIGHT_EGRESS_FAMILY:-ipv6}"
+      LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS: "${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-true}"
 
       ADMIN_ENABLED: "true"
       ADMIN_PORT: "9090"
