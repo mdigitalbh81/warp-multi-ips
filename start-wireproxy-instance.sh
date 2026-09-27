@@ -51,7 +51,7 @@ if [ ! -f "$ACCOUNT_FILE" ] || [ ! -f "$PROFILE_FILE" ]; then
     MAX_REG_ATTEMPTS=10
     for attempt in $(seq 1 $MAX_REG_ATTEMPTS); do
         echo "[Instance ${INSTANCE}] Registration attempt ${attempt}/${MAX_REG_ATTEMPTS}..."
-        # wgcf v2.2.32 registration syntax is simply: wgcf register
+        # wgcf registration is non-interactive and uses the per-instance account file
         # Capture stderr/stdout to a temporary file so failures are diagnosable
         # without printing account/profile secrets.
         REG_LOG=$(mktemp)
@@ -60,15 +60,31 @@ if [ ! -f "$ACCOUNT_FILE" ] || [ ! -f "$PROFILE_FILE" ]; then
             REG_OK=true
             break
         fi
-        REG_ERROR=$(grep -vE '^[[:space:]]*(github\.com/|runtime/|goroutine |Wraps:|Error types:|\||[0-9]+:)' "$REG_LOG" 2>/dev/null | head -n 4 | tr '\n' ' ' | sed -E 's/(license|token|access[_ -]?token|private[_ -]?key|key)[=: ][^ ]+/<redacted>/Ig')
+        REG_ERROR=$(grep -vE '^[[:space:]]*(github\.com/|runtime/|goroutine |Wraps:|Error types:|\\||[0-9]+:)' "$REG_LOG" 2>/dev/null | head -n 4 | tr '\\n' ' ' | sed -E 's/(license|token|access[_ -]?token|private[_ -]?key|key)[=: ][^ ]+/<redacted>/Ig')
+        RATE_LIMITED=false
+        if grep -qE '(^|[^0-9])429([^0-9]|$)|Too Many Requests' "$REG_LOG" 2>/dev/null; then
+            RATE_LIMITED=true
+        fi
         rm -f "$REG_LOG"
         [ -n "$REG_ERROR" ] && echo "[Instance ${INSTANCE}] wgcf register error: ${REG_ERROR}"
-        BACKOFF=$(( (1 << attempt) + (RANDOM % (1 << attempt)) ))
-        if [ $BACKOFF -gt 60 ]; then
-            BACKOFF=60
+
+        if [ "$RATE_LIMITED" = true ]; then
+            case "$attempt" in
+                1) BACKOFF=90 ;;
+                2) BACKOFF=120 ;;
+                3) BACKOFF=180 ;;
+                *) BACKOFF=300 ;;
+            esac
+            BACKOFF=$((BACKOFF + (RANDOM % 16)))
+            echo "[Instance ${INSTANCE}] Cloudflare rate limit detected (429); cooling down for ${BACKOFF}s..."
+        else
+            BACKOFF=$(( (1 << attempt) + (RANDOM % (1 << attempt)) ))
+            if [ "$BACKOFF" -gt 60 ]; then
+                BACKOFF=60
+            fi
+            echo "[Instance ${INSTANCE}] Registration attempt failed, retrying in ${BACKOFF}s..."
         fi
-        echo "[Instance ${INSTANCE}] Registration attempt failed, retrying in ${BACKOFF}s..."
-        sleep $BACKOFF
+        sleep "$BACKOFF"
     done
     
 if [ "$REG_OK" = false ]; then
