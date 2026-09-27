@@ -83,11 +83,11 @@ class ProxyHostPrecedenceTests(unittest.TestCase):
         with proxy_host_env(""):
             self.assertEqual(server.get_config()["proxy_host_omniroute"], "custom-proxy-host")
 
-    def test_both_empty_stays_empty(self):
+    def test_both_empty_uses_lightweight_default(self):
         self.write_config({"proxy_host_omniroute": ""})
         server = load_server(self.tmp)
         with proxy_host_env(""):
-            self.assertEqual(server.get_config()["proxy_host_omniroute"], "")
+            self.assertEqual(server.get_config()["proxy_host_omniroute"], "omniroute_warp-proxy")
 
     def test_legacy_proxy_host_is_last_fallback(self):
         self.write_config({"proxy_host_omniroute": ""})
