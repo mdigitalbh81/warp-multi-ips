@@ -21,6 +21,7 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 
 DATA_DIR = Path(os.environ.get("WARP_DATA_DIR", "/var/lib/cloudflare-warp"))
+WARP_DATA_DIR = DATA_DIR
 CONFIG_FILE = Path(os.environ.get("ADMIN_CONFIG_FILE", DATA_DIR / "admin-config.json"))
 CREDENTIALS_FILE = Path(os.environ.get("ADMIN_CREDENTIALS_FILE", DATA_DIR / "admin-credentials.json"))
 ENV_FILE = Path(os.environ.get("WARP_ENV_FILE", "/tmp/warp-admin-env"))
@@ -173,8 +174,114 @@ def get_recovery_lock(index):
         return RECOVERY_LOCKS[index]
 
 
+def manual_restart_wireproxy_instance(index, cfg=None):
+    """Restart wireproxy for a specific instance using existing profile (manual trigger)."""
+    if cfg is None:
+        cfg = get_config(True)
+    lock = get_recovery_lock(index)
+    if not lock.acquire(blocking=False):
+        return {"ok": False, "error": "recovery in progress for this instance"}, 409
+    try:
+        port = 40000 + index
+        data_dir = WARP_DATA_DIR / "lightweight" / f"instance-{index}"
+        conf_file = data_dir / "wireproxy.conf"
+        profile_file = data_dir / "wgcf-profile.conf"
+        pid_file = Path(f"/tmp/wireproxy-instance-{index}.pid")
+        warp_pid_file = Path(f"/tmp/warp-instance-{index}.pid")
+
+        stop_instance(index)
+
+        if not conf_file.exists() and profile_file.exists():
+            lines = [l for l in profile_file.read_text().splitlines() if not (l.startswith("[Socks5]") or l.startswith("BindAddress"))]
+            lines.extend(["", "[Socks5]", f"BindAddress = 127.0.0.1:{port}"])
+            data_dir.mkdir(parents=True, exist_ok=True)
+            conf_file.write_text("\n".join(lines) + "\n")
+            try:
+                conf_file.chmod(0o600)
+            except Exception:
+                pass
+
+        if conf_file.exists():
+            proc = subprocess.Popen(["wireproxy", "-c", str(conf_file)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            pid_file.write_text(str(proc.pid))
+            warp_pid_file.write_text(str(proc.pid))
+        else:
+            start_script = Path("/start-wireproxy-instance.sh")
+            if not start_script.exists():
+                start_script = Path(__file__).resolve().parents[1] / "start-wireproxy-instance.sh"
+            subprocess.Popen([str(start_script), str(index), str(port), str(cfg.get("warp_connect_timeout", 30))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        timeout = cfg.get("warp_connect_timeout", 30)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if listener_present(port):
+                try:
+                    trace = trace_for_proxy(port, cfg)
+                    if trace.get("warp") in ("on", "plus"):
+                        refresh_all(force=True)
+                        return {"ok": True, "message": f"instance {index + 1} restarted successfully"}, 200
+                except Exception:
+                    pass
+            time.sleep(2)
+        return {"ok": False, "error": f"instance {index + 1} restart did not restore connectivity"}, 500
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}, 500
+    finally:
+        lock.release()
+
+
+def manual_reprovision_instance(index):
+    """Reprovision identity for wireproxy instance (new wgcf registration and WireGuard profile)."""
+    cfg = get_config(True)
+    if cfg.get("warp_engine") != "wireproxy":
+        return {"ok": False, "error": "reprovision identity only supported for wireproxy engine"}, 400
+    lock = get_recovery_lock(index)
+    if not lock.acquire(blocking=False):
+        return {"ok": False, "error": "recovery in progress for this instance"}, 409
+    try:
+        port = 40000 + index
+        data_dir = WARP_DATA_DIR / "lightweight" / f"instance-{index}"
+        stop_instance(index)
+
+        for fname in ("wgcf-account.toml", "wgcf-profile.conf", "wireproxy.conf", "egress.json"):
+            fpath = data_dir / fname
+            if fpath.exists():
+                try:
+                    fpath.unlink()
+                except Exception:
+                    subprocess.run(["sudo", "rm", "-f", str(fpath)], capture_output=True)
+
+        start_script = Path("/start-wireproxy-instance.sh")
+        if not start_script.exists():
+            start_script = Path(__file__).resolve().parents[1] / "start-wireproxy-instance.sh"
+
+        license_key = os.environ.get("LICENSE_KEYS_CSV") or os.environ.get("WARP_LICENSE_KEY", "")
+        subprocess.Popen([str(start_script), str(index), str(port), license_key, str(cfg.get("warp_connect_timeout", 30))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        timeout = cfg.get("warp_connect_timeout", 30) + 15
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if listener_present(port):
+                try:
+                    trace = trace_for_proxy(port, cfg)
+                    if trace.get("warp") in ("on", "plus"):
+                        refresh_all(force=True)
+                        return {"ok": True, "message": f"instance {index + 1} reprovisioned successfully"}, 200
+                except Exception:
+                    pass
+            time.sleep(2)
+        return {"ok": False, "error": f"instance {index + 1} reprovision timed out"}, 500
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}, 500
+    finally:
+        lock.release()
+
+
 def manual_reconnect_instance(index):
     """Attempt a light reconnect for a specific instance (manual trigger)."""
+    cfg = get_config(True)
+    if cfg.get("warp_engine") == "wireproxy":
+        return manual_restart_wireproxy_instance(index, cfg)
     lock = get_recovery_lock(index)
     if not lock.acquire(blocking=False):
         return {"ok": False, "error": "recovery already in progress for this instance"}, 409
@@ -212,6 +319,9 @@ def manual_reconnect_instance(index):
 
 def manual_restart_instance(index):
     """Restart warp-svc for a specific instance (manual trigger)."""
+    cfg = get_config(True)
+    if cfg.get("warp_engine") == "wireproxy":
+        return manual_restart_wireproxy_instance(index, cfg)
     lock = get_recovery_lock(index)
     if not lock.acquire(blocking=False):
         return {"ok": False, "error": "recovery already in progress for this instance"}, 409
@@ -594,6 +704,9 @@ def sync_persisted_config():
         ("warp_connect_timeout", "WARP_CONNECT_TIMEOUT", int),
         ("auto_refresh_interval", "AUTO_REFRESH_INTERVAL", int),
         ("proxy_host_omniroute", "PROXY_HOST_OMNIROUTE", str),
+        ("warp_engine", "WARP_ENGINE", str),
+        ("lightweight_egress_family", "LIGHTWEIGHT_EGRESS_FAMILY", str),
+        ("lightweight_require_unique_egress", "LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS", parse_bool),
     ]:
         if not is_explicit_env(env_key):
             continue
@@ -625,6 +738,9 @@ def base_config():
         "proxy_auth_enabled": parse_bool(env.get("PROXY_AUTH_ENABLED", "false")),
         "proxy_user": env.get("PROXY_USER", ""),
         "proxy_password": os.environ.get("PROXY_PASS", "") if parse_bool(env.get("PROXY_AUTH_ENABLED", "false")) else "",
+        "warp_engine": env.get("WARP_ENGINE") or os.environ.get("WARP_ENGINE", "official"),
+        "lightweight_egress_family": env.get("LIGHTWEIGHT_EGRESS_FAMILY") or os.environ.get("LIGHTWEIGHT_EGRESS_FAMILY", "ipv6"),
+        "lightweight_require_unique_egress": parse_bool(env.get("LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS", os.environ.get("LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS", "true"))),
     }
 
 
@@ -641,6 +757,9 @@ def get_config(include_secret=False):
         "auto_refresh_interval": resolve_config_field(env, stored, "AUTO_REFRESH_INTERVAL", "auto_refresh_interval", 60, int, min_val=1),
         "proxy_auth_enabled": bool(stored.get("proxy_auth_enabled", parse_bool(env.get("PROXY_AUTH_ENABLED")))),
         "proxy_user": stored.get("proxy_user", env.get("PROXY_USER", "")),
+        "warp_engine": resolve_config_field(env, stored, "WARP_ENGINE", "warp_engine", "official", str),
+        "lightweight_egress_family": resolve_config_field(env, stored, "LIGHTWEIGHT_EGRESS_FAMILY", "lightweight_egress_family", "ipv6", str),
+        "lightweight_require_unique_egress": resolve_config_field(env, stored, "LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS", "lightweight_require_unique_egress", True, parse_bool),
     }
     if include_secret:
         cfg["proxy_password"] = stored.get("proxy_password", os.environ.get("PROXY_PASS", ""))
@@ -663,6 +782,12 @@ def validate_config(cfg):
         errors.append(f"instances must be between 1 and {MAX_INSTANCES}")
     if mode not in ("round-robin", "dedicated"):
         errors.append("proxy_mode must be round-robin or dedicated")
+    engine = cfg.get("warp_engine", "official")
+    if engine not in ("official", "wireproxy"):
+        errors.append("warp_engine must be official or wireproxy")
+    family = cfg.get("lightweight_egress_family", "ipv6")
+    if family not in ("ipv6", "ipv4", "auto"):
+        errors.append("lightweight_egress_family must be ipv6, ipv4, or auto")
     for name, value in (
         ("proxy_base_port", base_port),
         ("proxy_max_rps", max_rps),
@@ -779,11 +904,98 @@ def pid_alive(pid):
 
 
 def instance_process_alive(index):
-    pid_file = Path(f"/tmp/warp-instance-{index}.pid")
-    if pid_file.exists() and pid_alive(pid_file.read_text().strip()):
-        return True
-    result = subprocess.run(["pgrep", "-f", f"STATE_DIRECTORY=.*instance-{index}"], capture_output=True)
-    return result.returncode == 0
+    for pid_path in (Path(f"/tmp/warp-instance-{index}.pid"), Path(f"/tmp/wireproxy-instance-{index}.pid")):
+        if pid_path.exists():
+            try:
+                if pid_alive(pid_path.read_text().strip()):
+                    return True
+            except Exception:
+                pass
+    for pattern in (f"STATE_DIRECTORY=.*instance-{index}", f"wireproxy.*instance-{index}"):
+        result = subprocess.run(["pgrep", "-f", pattern], capture_output=True)
+        if result.returncode == 0:
+            return True
+    return False
+
+
+def query_ipv6_for_instance(internal_port, timeout=6):
+    try:
+        result = subprocess.run(
+            ["curl", "-fsS", "--max-time", str(timeout), "--socks5-hostname", f"127.0.0.1:{internal_port}", "https://api6.ipify.org"],
+            text=True,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            ip = result.stdout.strip()
+            if ip and ":" in ip:
+                return ip
+    except Exception:
+        pass
+    return None
+
+
+def read_egress_json(index):
+    data_dir = WARP_DATA_DIR / "lightweight" / f"instance-{index}"
+    egress_file = data_dir / "egress.json"
+    return read_json(egress_file, {})
+
+
+def write_egress_json(index, current_ipv6, previous_ipv6="", last_change=None):
+    data_dir = WARP_DATA_DIR / "lightweight" / f"instance-{index}"
+    if data_dir.exists():
+        egress_file = data_dir / "egress.json"
+        write_secret_json(egress_file, {
+            "current_ipv6": current_ipv6 or "",
+            "previous_ipv6": previous_ipv6 or "",
+            "last_change": last_change or utc_now(),
+        })
+
+
+def get_instance_metrics(index):
+    """Attempt to get PSS, RSS and thread count for an instance process."""
+    metrics = {"pss_kb": None, "rss_kb": None, "threads": None}
+    for pid_file in (Path(f"/tmp/wireproxy-instance-{index}.pid"), Path(f"/tmp/warp-instance-{index}.pid")):
+        if pid_file.exists():
+            try:
+                pid = int(pid_file.read_text().strip())
+                status_path = Path(f"/proc/{pid}/status")
+                smaps_path = Path(f"/proc/{pid}/smaps_rollup")
+                if status_path.exists():
+                    for line in status_path.read_text().splitlines():
+                        if line.startswith("Threads:"):
+                            metrics["threads"] = int(line.split()[1])
+                        elif line.startswith("VmRSS:"):
+                            metrics["rss_kb"] = int(line.split()[1])
+                if smaps_path.exists():
+                    for line in smaps_path.read_text().splitlines():
+                        if line.startswith("Pss:"):
+                            metrics["pss_kb"] = int(line.split()[1])
+                if metrics["threads"] is not None:
+                    return metrics
+            except Exception:
+                pass
+    return metrics
+
+
+def apply_uniqueness_check(items, cfg):
+    if cfg.get("warp_engine") == "wireproxy" and cfg.get("lightweight_require_unique_egress", True):
+        seen_ip6 = {}
+        for item in items:
+            ip = item.get("ipv6_egress") or (item.get("egress_ip") if item.get("egress_ip") and ":" in item.get("egress_ip") else None)
+            if ip and item.get("health") == "healthy":
+                if ip in seen_ip6:
+                    first_inst = seen_ip6[ip]
+                    item["egress_unique"] = False
+                    item["health"] = "degraded"
+                    item["error"] = f"IPv6 egress collision with instance {first_inst}"
+                else:
+                    seen_ip6[ip] = item["instance"]
+                    item["egress_unique"] = True
+            else:
+                item["egress_unique"] = True
+    else:
+        for item in items:
+            item["egress_unique"] = True
 
 
 def proxy_url(port, cfg):
@@ -829,6 +1041,7 @@ def trace_for_proxy(port, cfg, timeout=10):
 
 
 def refresh_instance(index, cfg, listening_ports=None):
+    warp_engine = cfg.get("warp_engine", "official")
     proxy_port = cfg["proxy_base_port"] + index if cfg["proxy_mode"] == "dedicated" else 1080
     proxy_host = cfg.get("proxy_host_omniroute") or ""
     proxy_address = f"{proxy_host}:{proxy_port}" if proxy_host else ""
@@ -843,13 +1056,24 @@ def refresh_instance(index, cfg, listening_ports=None):
     dedicated_proxy_ready = listener_present(proxy_port, listening_ports=listening_ports)
     cached_item = STATE.get("egress", {}).get(index + 1, {})
     wd = get_watchdog_instance(index)
+    ej = read_egress_json(index)
+    metrics = get_instance_metrics(index)
     prev_egress = cached_item.get("egress_ip") or (wd.get("current_egress") if wd else None)
+    prev_ipv6 = cached_item.get("previous_ipv6_egress") or ej.get("previous_ipv6") or (wd.get("previous_ipv6_egress") if wd else None)
+    curr_ipv6 = cached_item.get("ipv6_egress") or ej.get("current_ipv6") or (wd.get("ipv6_egress") if wd else None)
+    last_change = cached_item.get("last_egress_change") or ej.get("last_change") or (wd.get("last_egress_change") if wd else None)
     item = {
         "instance": index + 1,
         "proxy_port": proxy_port,
         "internal_port": internal_port,
+        "engine": warp_engine,
         "egress_ip": prev_egress,
+        "ipv6_egress": curr_ipv6,
+        "previous_ipv6_egress": prev_ipv6,
+        "egress_unique": True,
+        "last_egress_change": last_change,
         "warp": False,
+        "warp_status": "off",
         "warp_connected": False,
         "proxy_host_omniroute": proxy_host,
         "proxy_address_omniroute": proxy_address,
@@ -866,6 +1090,9 @@ def refresh_instance(index, cfg, listening_ports=None):
         "listener_healthy": dedicated_proxy_ready,
         "internal_healthy": internal_socks_ready,
         "note": get_instance_note(index),
+        "pss_kb": metrics.get("pss_kb"),
+        "rss_kb": metrics.get("rss_kb"),
+        "threads": metrics.get("threads"),
         "last_check": utc_now(),
         "error": None,
     }
@@ -875,8 +1102,9 @@ def refresh_instance(index, cfg, listening_ports=None):
 
     try:
         trace = trace_for_instance(internal_port, timeout=8)
-        item["egress_ip"] = trace.get("ip") or prev_egress
+        trace_ip = trace.get("ip")
         item["warp"] = trace.get("warp") in ("on", "plus")
+        item["warp_status"] = trace.get("warp", "on" if item["warp"] else "off")
         item["warp_connected"] = item["warp"]
         if item["warp"]:
             _WARP_LAST_CONFIRMED[index] = time.time()
@@ -887,6 +1115,29 @@ def refresh_instance(index, cfg, listening_ports=None):
         item["country_name"] = loc
         item["location"] = loc
         item["error"] = None
+
+        if warp_engine == "wireproxy" or cfg.get("lightweight_egress_family") == "ipv6":
+            ip6 = query_ipv6_for_instance(internal_port, timeout=6)
+            if not ip6 and trace_ip and ":" in trace_ip:
+                ip6 = trace_ip
+            if ip6:
+                if curr_ipv6 and curr_ipv6 != ip6:
+                    prev_ipv6 = curr_ipv6
+                    last_change = utc_now()
+                    write_egress_json(index, ip6, prev_ipv6, last_change)
+                elif not curr_ipv6:
+                    write_egress_json(index, ip6, prev_ipv6 or "", last_change or utc_now())
+                curr_ipv6 = ip6
+                item["ipv6_egress"] = curr_ipv6
+                item["previous_ipv6_egress"] = prev_ipv6
+                item["last_egress_change"] = last_change
+                item["egress_ip"] = curr_ipv6
+            else:
+                item["egress_ip"] = trace_ip or prev_egress
+        else:
+            item["egress_ip"] = trace_ip or prev_egress
+            if trace_ip and ":" in trace_ip:
+                item["ipv6_egress"] = trace_ip
     except Exception as exc:
         wd_status = wd.get("status") if wd else ""
         wd_failed = wd_status in ("offline", "degraded")
@@ -975,7 +1226,9 @@ def refresh_all(force=False):
                     }
         STATE["egress"] = results
         STATE["last_refresh_finished"] = time.time()
-        return [results[i + 1] for i in range(cfg["instances"])]
+        items_list = [results[i + 1] for i in range(cfg["instances"])]
+        apply_uniqueness_check(items_list, cfg)
+        return items_list
 
 
 def get_instances():
@@ -997,9 +1250,10 @@ def get_instances():
         proxy_address = f"{proxy_host}:{proxy_port}" if proxy_host else ""
         internal_port = 40000 + idx
         if existing:
-            process_running = existing.get("process_running", False)
-            internal_socks_ready = existing.get("internal_socks_ready", False)
-            dedicated_proxy_ready = existing.get("dedicated_proxy_ready", False)
+            is_h = existing.get("health") == "healthy"
+            process_running = existing.get("process_running", is_h)
+            internal_socks_ready = existing.get("internal_socks_ready", is_h)
+            dedicated_proxy_ready = existing.get("dedicated_proxy_ready", is_h)
         else:
             listening_ports = listening_ports or get_listening_ports()
             process_running = instance_process_alive(idx)
@@ -1011,8 +1265,14 @@ def get_instances():
             "instance": idx + 1,
             "proxy_port": proxy_port,
             "internal_port": internal_port,
+            "engine": cfg.get("warp_engine", "official"),
             "egress_ip": wd.get("current_egress") if wd else None,
+            "ipv6_egress": (wd.get("ipv6_egress") if wd else None) or (read_egress_json(idx).get("current_ipv6")),
+            "previous_ipv6_egress": (wd.get("previous_ipv6_egress") if wd else None) or (read_egress_json(idx).get("previous_ipv6")),
+            "egress_unique": True,
+            "last_egress_change": (wd.get("last_egress_change") if wd else None) or (read_egress_json(idx).get("last_change")),
             "warp": False,
+            "warp_status": "off",
             "warp_connected": False,
             "proxy_host_omniroute": proxy_host,
             "proxy_address_omniroute": proxy_address,
@@ -1022,6 +1282,9 @@ def get_instances():
             "country_name": None,
             "location": None,
             "note": get_instance_note(idx),
+            "pss_kb": get_instance_metrics(idx).get("pss_kb"),
+            "rss_kb": get_instance_metrics(idx).get("rss_kb"),
+            "threads": get_instance_metrics(idx).get("threads"),
             "process_running": process_running,
             "internal_socks_ready": internal_socks_ready,
             "dedicated_proxy_ready": dedicated_proxy_ready,
@@ -1126,6 +1389,7 @@ def get_instances():
         item["listener_healthy"] = item["proxy_healthy"]
 
         items.append(item)
+    apply_uniqueness_check(items, cfg)
     return items
 
 
@@ -1386,7 +1650,12 @@ def generate_omniroute_export():
         if port < base_port or port >= base_port + num_instances:
             continue
         health = item.get("health", "unknown")
-        usable = health == "healthy" or item.get("proxy_healthy") is True or item.get("listener_healthy") is True
+        usable = (
+            health == "healthy"
+            and item.get("proxy_healthy") is True
+            and item.get("listener_healthy") is True
+            and item.get("egress_unique", True) is True
+        )
         status = "active" if usable else "inactive"
 
         name = f"WARP-{idx:0{pad}d}"
@@ -1502,11 +1771,20 @@ class Handler(SimpleHTTPRequestHandler):
         elif parsed.path == "/api/status":
             instances = get_instances()
             healthy = sum(1 for item in instances if item["health"] == "healthy")
+            unique_egresses = len(set(
+                item.get("ipv6_egress") or item.get("egress_ip")
+                for item in instances
+                if item["health"] == "healthy" and (item.get("ipv6_egress") or item.get("egress_ip"))
+            ))
             cfg = public_config()
             self.send_json({
+                "engine": cfg.get("warp_engine", "official"),
                 "configured_instances": cfg["instances"],
                 "healthy_instances": healthy,
-                    "max_instances": MAX_INSTANCES,
+                "unique_egresses": unique_egresses,
+                "egress_family": cfg.get("lightweight_egress_family", "ipv6"),
+                "unique_egress_required": cfg.get("lightweight_require_unique_egress", True),
+                "max_instances": MAX_INSTANCES,
                 "proxy_mode": cfg["proxy_mode"],
                 "proxy_base_port": cfg["proxy_base_port"],
                 "operation": STATE.get("operation"),
@@ -1546,6 +1824,9 @@ class Handler(SimpleHTTPRequestHandler):
                 "auto_refresh_interval",
                 "proxy_auth_enabled",
                 "proxy_user",
+                "warp_engine",
+                "lightweight_egress_family",
+                "lightweight_require_unique_egress",
             ):
                 if key in body:
                     new_cfg[key] = body[key]
@@ -1556,6 +1837,8 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 for key in ("instances", "proxy_base_port", "proxy_max_rps", "warp_connect_timeout", "auto_refresh_interval"):
                     new_cfg[key] = int(new_cfg[key])
+                if "lightweight_require_unique_egress" in new_cfg:
+                    new_cfg["lightweight_require_unique_egress"] = parse_bool(new_cfg["lightweight_require_unique_egress"])
             except (TypeError, ValueError):
                 self.send_json({"ok": False, "errors": ["numeric fields must be valid integers"]}, 400)
                 return
@@ -1597,15 +1880,27 @@ class Handler(SimpleHTTPRequestHandler):
             response, status = manual_restart_instance(index)
             self.send_json(response, status)
             return
+
+        # POST /api/instances/{id}/reprovision
+        m = re.match(r"^/api/instances/(\d+)/reprovision$", parsed.path)
+        if m:
+            instance_id = int(m.group(1))
+            cfg = get_config(False)
+            if instance_id < 1 or instance_id > cfg["instances"]:
+                self.send_json({"ok": False, "errors": ["instance not found"]}, 404)
+                return
+            index = instance_id - 1
+            response, status = manual_reprovision_instance(index)
+            self.send_json(response, status)
+            return
         self.send_json({"error": "not found"}, 404)
 
     def do_PATCH(self):
         parsed = urlparse(self.path)
         if not self.require_auth():
             return
-        # PATCH /api/instances/{id}/note
-        import re as _re
-        m = _re.match(r"^/api/instances/(\d+)/note$", parsed.path)
+        # # PATCH /api/instances/{id}/note
+        m = re.match(r"^/api/instances/(\d+)/note$", parsed.path)
         if m:
             instance_id = int(m.group(1))
             cfg = get_config(False)

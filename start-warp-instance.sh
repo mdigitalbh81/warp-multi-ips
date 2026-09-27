@@ -23,6 +23,16 @@ INSTANCE=${1:?"Instance number required"}
 PORT=${2:?"Port number required"}
 LICENSE_KEYS_CSV=${3:-}
 CONNECT_TIMEOUT=${4:-30}
+
+if [ "${WARP_ENGINE:-official}" = "wireproxy" ]; then
+    SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
+    if [ -f "/start-wireproxy-instance.sh" ]; then
+        exec /start-wireproxy-instance.sh "$INSTANCE" "$PORT" "$CONNECT_TIMEOUT"
+    elif [ -f "${SCRIPT_DIR}/start-wireproxy-instance.sh" ]; then
+        exec "${SCRIPT_DIR}/start-wireproxy-instance.sh" "$INSTANCE" "$PORT" "$CONNECT_TIMEOUT"
+    fi
+fi
+
 PID_FILE="/tmp/warp-instance-${INSTANCE}.pid"
 
 # Parse license keys

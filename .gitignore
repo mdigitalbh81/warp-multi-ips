@@ -18,3 +18,12 @@ Thumbs.db
 # Python cache
 __pycache__/
 *.py[cod]
+# Jarvis local metadata
+.jarvis/
+
+# Lightweight WARP persistence and configs
+lightweight/
+/var/lib/cloudflare-warp/
+*.toml
+*.conf
+egress.json

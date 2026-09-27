@@ -106,7 +106,7 @@ MDMEOF
 # ==============================================================================
 # SINGLE INSTANCE MODE (default, fully backward-compatible)
 # ==============================================================================
-if [ "$WARP_INSTANCES" -eq 1 ] && [ "$PROXY_MODE" != "dedicated" ] && [ "${ADMIN_ENABLED:-false}" != "true" ]; then
+if [ "$WARP_INSTANCES" -eq 1 ] && [ "$PROXY_MODE" != "dedicated" ] && [ "${ADMIN_ENABLED:-false}" != "true" ] && [ "${WARP_ENGINE:-official}" = "official" ]; then
 
     # start dbus
     sudo mkdir -p /run/dbus
@@ -320,9 +320,19 @@ for i in $(seq 0 $((WARP_INSTANCES - 1))); do
     /start-warp-instance.sh \
         "$i" "$PORT" "$LICENSE_KEYS_CSV" "${WARP_CONNECT_TIMEOUT:-30}" &
     INSTANCE_PIDS+=($!)
-    sleep $((5 + RANDOM % 5))  # stagger with jitter (5-9s) to avoid Cloudflare API rate-limiting
+    if [ "${WARP_ENGINE:-official}" = "wireproxy" ]; then
+        LW_DIR="${WARP_DATA_DIR:-/var/lib/cloudflare-warp}/lightweight/instance-${i}"
+        if [ ! -f "$LW_DIR/wgcf-profile.conf" ]; then
+            if [ "$i" -lt $((WARP_INSTANCES - 1)) ]; then
+                sleep "${LIGHTWEIGHT_REGISTRATION_DELAY:-10}"
+            fi
+        else
+            sleep 0.5
+        fi
+    else
+        sleep $((5 + RANDOM % 5))  # stagger with jitter (5-9s) to avoid Cloudflare API rate-limiting
+    fi
 done
-
 # ---- verify each instance is connected to WARP (parallel) ----
 echo ""
 echo "Verifying WARP instances (parallel)..."
@@ -330,16 +340,23 @@ READY_COUNT=0
 MAX_VERIFY_WAIT=90
 VERIFY_DIR=$(mktemp -d)
 VERIFY_PIDS=()
-
 for i in $(seq 0 $((WARP_INSTANCES - 1))); do
+    PORT=$((40000 + i))
     (
-        PORT=$((40000 + i))
         WAIT=0
         while [ "$WAIT" -lt "$MAX_VERIFY_WAIT" ]; do
-            if curl -s --connect-timeout 3 --socks5 "127.0.0.1:${PORT}" \
-                "https://cloudflare.com/cdn-cgi/trace" 2>/dev/null | grep -qE 'warp=(on|plus)'; then
-                echo "OK" > "${VERIFY_DIR}/${i}"
-                exit 0
+            if curl --connect-timeout 4 --socks5-hostname "127.0.0.1:${PORT}"                 https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -qE 'warp=(on|plus)'; then
+                if [ "${WARP_ENGINE:-official}" = "wireproxy" ]; then
+                    IP6=$(curl -fsS --max-time 6 --socks5-hostname "127.0.0.1:${PORT}" https://api6.ipify.org 2>/dev/null || true)
+                    if [[ "$IP6" =~ : ]]; then
+                        echo "$IP6" > "${VERIFY_DIR}/${i}.ip6"
+                        echo "OK" > "${VERIFY_DIR}/${i}"
+                        exit 0
+                    fi
+                else
+                    echo "OK" > "${VERIFY_DIR}/${i}"
+                    exit 0
+                fi
             fi
             sleep 3
             WAIT=$((WAIT + 3))
@@ -352,6 +369,21 @@ done
 for pid in "${VERIFY_PIDS[@]}"; do
     wait "$pid" 2>/dev/null || true
 done
+
+if [ "${WARP_ENGINE:-official}" = "wireproxy" ] && [ "${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-true}" = "true" ]; then
+    declare -A SEEN_IP6
+    for i in $(seq 0 $((WARP_INSTANCES - 1))); do
+        if [ -f "${VERIFY_DIR}/${i}.ip6" ]; then
+            ADDR=$(cat "${VERIFY_DIR}/${i}.ip6")
+            if [ -n "${SEEN_IP6[$ADDR]+x}" ]; then
+                echo "Warning: IPv6 collision detected between instance ${SEEN_IP6[$ADDR]} and instance ${i} (${ADDR})"
+                rm -f "${VERIFY_DIR}/${i}"
+            else
+                SEEN_IP6["$ADDR"]="$i"
+            fi
+        fi
+    done
+fi
 
 for i in $(seq 0 $((WARP_INSTANCES - 1))); do
     PORT=$((40000 + i))

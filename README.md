@@ -72,6 +72,45 @@ If working, you'll see `warp=on` in the output.
 | `ADMIN_MAX_INSTANCES` | Safety limit for instance count changes from the panel | `200` |
 | `AUTO_REFRESH_INTERVAL` | Seconds between cached Current Egress IP refreshes | `60` |
 
+
+## WARP Engines
+
+This project supports two execution engines selectable via `WARP_ENGINE`:
+
+| Feature | Official Engine (`WARP_ENGINE=official`) | Lightweight Engine (`WARP_ENGINE=wireproxy`) |
+|---------|------------------------------------------|----------------------------------------------|
+| **Core Daemon** | Cloudflare `warp-svc` (per-instance) + D-Bus | Userspace `wireproxy 1.1.3` + `wgcf 2.2.32` |
+| **Memory Footprint (PSS)** | ~104 MB PSS per instance (~1040 MB for 10) | ~5.8 MB PSS per instance (~58 MB for 10) |
+| **RSS Footprint** | ~120 MB RSS per instance | ~13 MB RSS per instance |
+| **Egress Identification** | IPv4 / IPv6 dynamic Cloudflare egress | **Unique IPv6 egress per instance** |
+| **Identity Persistence** | `/var/lib/cloudflare-warp/instance-N/` | `/var/lib/cloudflare-warp/lightweight/instance-N/` |
+| **License / Zero Trust** | Supported (WARP+, Teams, mTLS) | Supported via wgcf registration & license key |
+| **Best Used For** | Standard setups, Zero Trust org enrollment | High instance counts, memory-constrained VPS, strict unique IPv6 egress |
+
+> **Benchmark Notice:** The figures above (~104MB vs ~5.8MB PSS) were measured in validated test environments. Exact memory usage depends on workload, concurrency, and architecture.
+
+### Lightweight Engine Architecture & IPv6 Egress
+
+When running `WARP_ENGINE=wireproxy`:
+1. **Identity & Persistence:** Each instance gets a persistent `wgcf` registration in `/var/lib/cloudflare-warp/lightweight/instance-N/` (`wgcf-account.toml` and `wgcf-profile.conf`). Existing profiles are reused across restarts without re-registering.
+2. **Internal SOCKS5:** Each instance runs a lightweight `wireproxy` daemon exposing an internal listener on `127.0.0.1:40000+N`.
+3. **External GOST Proxy:** GOST listens on external ports (e.g. `2080+N` in dedicated mode) and proxies traffic into the internal wireproxy SOCKS5 port.
+4. **IPv6 Egress Uniqueness:** Cloudflare WARP shares public IPv4 addresses across users and instances, frequently leading to IPv4 egress collisions. However, independent Cloudflare WARP device registrations are assigned **distinct public IPv6 addresses**. The lightweight engine verifies and tracks the IPv6 egress of each instance (`https://api6.ipify.org`). If an IPv6 collision occurs, the colliding instance is marked `degraded`, ensuring downstream consumers like OmniRoute only route through verified unique IPs.
+
+### Lightweight Engine Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `WARP_ENGINE` | Engine selection: `official` or `wireproxy` | `official` |
+| `LIGHTWEIGHT_EGRESS_FAMILY` | Egress address family: `ipv6` (recommended), `ipv4`, or `auto` | `ipv6` |
+| `LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS` | Require unique IPv6 egress per wireproxy instance | `true` |
+| `LIGHTWEIGHT_REGISTRATION_DELAY` | Stagger delay (seconds) between initial `wgcf` device registrations | `2` |
+| `LIGHTWEIGHT_EGRESS_CHECK_INTERVAL` | Periodic interval (seconds) for watchdog IPv6 egress validation | `60` |
+
+### Reprovisioning Identities
+
+In the admin panel, wireproxy instances include a **Reprovision** button (`POST /api/instances/{id}/reprovision`). Reprovisioning safely removes the existing `wgcf` registration, generates a fresh Cloudflare device identity and WireGuard profile, and restarts the wireproxy process.
+
 ## With Authentication
 
 ```yaml

@@ -9,6 +9,16 @@ HEALTHY_PORTS_FILE=${HEALTHY_PORTS_FILE:-/tmp/healthy-warp-ports}
 WARP_ENV_FILE=${WARP_ENV_FILE:-/tmp/warp-admin-env}
 MAX_WARP_INSTANCES=${MAX_WARP_INSTANCES:-45}
 export MAX_WARP_INSTANCES
+WARP_ENGINE=${WARP_ENGINE:-official}
+export WARP_ENGINE
+LIGHTWEIGHT_EGRESS_FAMILY=${LIGHTWEIGHT_EGRESS_FAMILY:-ipv6}
+export LIGHTWEIGHT_EGRESS_FAMILY
+LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS=${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-true}
+export LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS
+LIGHTWEIGHT_REGISTRATION_DELAY=${LIGHTWEIGHT_REGISTRATION_DELAY:-10}
+export LIGHTWEIGHT_REGISTRATION_DELAY
+LIGHTWEIGHT_EGRESS_CHECK_INTERVAL=${LIGHTWEIGHT_EGRESS_CHECK_INTERVAL:-60}
+export LIGHTWEIGHT_EGRESS_CHECK_INTERVAL
 PROXY_LOG_LEVEL=${PROXY_LOG_LEVEL:-warn}
 export PROXY_LOG_LEVEL
 export GOST_LOGGER_LEVEL="${PROXY_LOG_LEVEL}"
@@ -73,10 +83,13 @@ sync_admin_config() {
     SYNC_MODE="${ENV_PROXY_MODE_SET:+${PROXY_MODE}}" \
     SYNC_PORT="${ENV_PROXY_BASE_PORT_SET:+${PROXY_BASE_PORT}}" \
     SYNC_RPS="${ENV_PROXY_MAX_RPS_SET:+${PROXY_MAX_RPS}}" \
-    SYNC_TIMEOUT="${ENV_WARP_CONNECT_TIMEOUT_SET:+${WARP_CONNECT_TIMEOUT}}" \
-    SYNC_INTERVAL="${ENV_AUTO_REFRESH_INTERVAL_SET:+${AUTO_REFRESH_INTERVAL}}" \
-    SYNC_HOST="${ENV_PROXY_HOST_OMNIROUTE_SET:+${PROXY_HOST_OMNIROUTE}}" \
-    python3 -c '
+	SYNC_TIMEOUT="${ENV_WARP_CONNECT_TIMEOUT_SET:+${WARP_CONNECT_TIMEOUT}}" \
+	SYNC_INTERVAL="${ENV_AUTO_REFRESH_INTERVAL_SET:+${AUTO_REFRESH_INTERVAL}}" \
+	SYNC_HOST="${ENV_PROXY_HOST_OMNIROUTE_SET:+${PROXY_HOST_OMNIROUTE}}" \
+	SYNC_ENGINE="${ENV_WARP_ENGINE_SET:+${WARP_ENGINE}}" \
+	SYNC_FAMILY="${ENV_LIGHTWEIGHT_EGRESS_FAMILY_SET:+${LIGHTWEIGHT_EGRESS_FAMILY}}" \
+	SYNC_UNIQUE="${ENV_LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS_SET:+${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS}}" \
+	python3 -c '
 import json, os, sys, tempfile
 
 path = os.environ.get("ADMIN_CONFIG_FILE")
@@ -118,6 +131,9 @@ update_int("proxy_max_rps", "SYNC_RPS")
 update_int("warp_connect_timeout", "SYNC_TIMEOUT")
 update_int("auto_refresh_interval", "SYNC_INTERVAL")
 update_str("proxy_host_omniroute", "SYNC_HOST")
+update_str("warp_engine", "SYNC_ENGINE")
+update_str("lightweight_egress_family", "SYNC_FAMILY")
+update_str("lightweight_require_unique_egress", "SYNC_UNIQUE")
 
 if changed:
     dirname = os.path.dirname(path) or "."
@@ -144,22 +160,32 @@ load_admin_config(){
     local env_rps_val="${ENV_PROXY_MAX_RPS_VALUE:-${PROXY_MAX_RPS:-}}"
     local env_timeout_set="${ENV_WARP_CONNECT_TIMEOUT:-${WARP_CONNECT_TIMEOUT+x}}"
     local env_timeout_val="${ENV_WARP_CONNECT_TIMEOUT_VALUE:-${WARP_CONNECT_TIMEOUT:-}}"
-    local env_interval_set="${ENV_AUTO_REFRESH_INTERVAL:-${AUTO_REFRESH_INTERVAL+x}}"
-    local env_interval_val="${ENV_AUTO_REFRESH_INTERVAL_VALUE:-${AUTO_REFRESH_INTERVAL:-}}"
-    local env_host_val="${ENV_PROXY_HOST_OMNIROUTE:-${PROXY_HOST_OMNIROUTE:-}}"
+	local env_interval_set="${ENV_AUTO_REFRESH_INTERVAL:-${AUTO_REFRESH_INTERVAL+x}}"
+	local env_interval_val="${ENV_AUTO_REFRESH_INTERVAL_VALUE:-${AUTO_REFRESH_INTERVAL:-}}"
+	local env_host_val="${ENV_PROXY_HOST_OMNIROUTE:-${PROXY_HOST_OMNIROUTE:-}}"
+	local env_engine_set="${ENV_WARP_ENGINE:-${WARP_ENGINE+x}}"
+	local env_engine_val="${ENV_WARP_ENGINE_VALUE:-${WARP_ENGINE:-}}"
+	local env_family_set="${ENV_LIGHTWEIGHT_EGRESS_FAMILY:-${LIGHTWEIGHT_EGRESS_FAMILY+x}}"
+	local env_family_val="${ENV_LIGHTWEIGHT_EGRESS_FAMILY_VALUE:-${LIGHTWEIGHT_EGRESS_FAMILY:-}}"
+	local env_unique_set="${ENV_LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS+x}}"
+	local env_unique_val="${ENV_LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS_VALUE:-${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-}}"
 
-    if [ "${ADMIN_ENABLED:-false}" = "true" ] && [ -f "$ADMIN_CONFIG_FILE" ]; then
-        local persisted_instances persisted_mode persisted_port persisted_host
-        local persisted_rps persisted_timeout persisted_interval
+	if [ "${ADMIN_ENABLED:-false}" = "true" ] && [ -f "$ADMIN_CONFIG_FILE" ]; then
+		local persisted_instances persisted_mode persisted_port persisted_host
+		local persisted_rps persisted_timeout persisted_interval
+		local persisted_engine persisted_family persisted_unique
 
         persisted_instances=$(jq -r '.instances // ""' "$ADMIN_CONFIG_FILE")
         persisted_mode=$(jq -r '.proxy_mode // ""' "$ADMIN_CONFIG_FILE")
         persisted_port=$(jq -r '.proxy_base_port // ""' "$ADMIN_CONFIG_FILE")
         persisted_host=$(jq -r '.proxy_host_omniroute // ""' "$ADMIN_CONFIG_FILE")
         persisted_rps=$(jq -r '.proxy_max_rps // ""' "$ADMIN_CONFIG_FILE")
-        persisted_timeout=$(jq -r '.warp_connect_timeout // ""' "$ADMIN_CONFIG_FILE")
-        persisted_interval=$(jq -r '.auto_refresh_interval // ""' "$ADMIN_CONFIG_FILE")
-        PROXY_AUTH_ENABLED=$(jq -r '.proxy_auth_enabled // false' "$ADMIN_CONFIG_FILE")
+		persisted_timeout=$(jq -r '.warp_connect_timeout // ""' "$ADMIN_CONFIG_FILE")
+		persisted_interval=$(jq -r '.auto_refresh_interval // ""' "$ADMIN_CONFIG_FILE")
+		persisted_engine=$(jq -r '.warp_engine // ""' "$ADMIN_CONFIG_FILE")
+		persisted_family=$(jq -r '.lightweight_egress_family // ""' "$ADMIN_CONFIG_FILE")
+		persisted_unique=$(jq -r '.lightweight_require_unique_egress // ""' "$ADMIN_CONFIG_FILE")
+		PROXY_AUTH_ENABLED=$(jq -r '.proxy_auth_enabled // false' "$ADMIN_CONFIG_FILE")
         CFG_PROXY_USER=$(jq -r '.proxy_user // ""' "$ADMIN_CONFIG_FILE")
         CFG_PROXY_PASS=$(jq -r '.proxy_password // ""' "$ADMIN_CONFIG_FILE")
 
@@ -240,12 +266,51 @@ load_admin_config(){
         elif [ -n "$persisted_interval" ]; then
             AUTO_REFRESH_INTERVAL="$persisted_interval"
             ENV_AUTO_REFRESH_INTERVAL_SET=""
-        else
-            AUTO_REFRESH_INTERVAL="${AUTO_REFRESH_INTERVAL:-60}"
-            ENV_AUTO_REFRESH_INTERVAL_SET=""
-        fi
+		else
+			AUTO_REFRESH_INTERVAL="${AUTO_REFRESH_INTERVAL:-60}"
+			ENV_AUTO_REFRESH_INTERVAL_SET=""
+		fi
 
-        if [ "$PROXY_AUTH_ENABLED" = "true" ]; then
+		if [ -n "$env_engine_set" ] && [ -n "$env_engine_val" ]; then
+			WARP_ENGINE="$env_engine_val"
+			ENV_WARP_ENGINE_SET="true"
+		elif [ -n "$persisted_engine" ]; then
+			WARP_ENGINE="$persisted_engine"
+			ENV_WARP_ENGINE_SET=""
+		else
+			WARP_ENGINE="${WARP_ENGINE:-official}"
+			ENV_WARP_ENGINE_SET=""
+		fi
+		export ENV_WARP_ENGINE_SET
+		export WARP_ENGINE
+
+		if [ -n "$env_family_set" ] && [ -n "$env_family_val" ]; then
+			LIGHTWEIGHT_EGRESS_FAMILY="$env_family_val"
+			ENV_LIGHTWEIGHT_EGRESS_FAMILY_SET="true"
+		elif [ -n "$persisted_family" ]; then
+			LIGHTWEIGHT_EGRESS_FAMILY="$persisted_family"
+			ENV_LIGHTWEIGHT_EGRESS_FAMILY_SET=""
+		else
+			LIGHTWEIGHT_EGRESS_FAMILY="${LIGHTWEIGHT_EGRESS_FAMILY:-ipv6}"
+			ENV_LIGHTWEIGHT_EGRESS_FAMILY_SET=""
+		fi
+		export ENV_LIGHTWEIGHT_EGRESS_FAMILY_SET
+		export LIGHTWEIGHT_EGRESS_FAMILY
+
+		if [ -n "$env_unique_set" ] && [ -n "$env_unique_val" ]; then
+			LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS="$env_unique_val"
+			ENV_LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS_SET="true"
+		elif [ -n "$persisted_unique" ]; then
+			LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS="$persisted_unique"
+			ENV_LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS_SET=""
+		else
+			LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS="${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-true}"
+			ENV_LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS_SET=""
+		fi
+		export ENV_LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS_SET
+		export LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS
+
+		if [ "$PROXY_AUTH_ENABLED" = "true" ]; then
             PROXY_USER="$CFG_PROXY_USER"
             PROXY_PASS="$CFG_PROXY_PASS"
         else
@@ -289,11 +354,41 @@ load_admin_config(){
             WARP_CONNECT_TIMEOUT="${WARP_CONNECT_TIMEOUT:-30}"
         fi
 
-        if [ -n "$env_interval_set" ] && [ -n "$env_interval_val" ]; then
-            AUTO_REFRESH_INTERVAL="$env_interval_val"
-        else
-            AUTO_REFRESH_INTERVAL="${AUTO_REFRESH_INTERVAL:-60}"
-        fi
+	if [ -n "$env_interval_set" ] && [ -n "$env_interval_val" ]; then
+		AUTO_REFRESH_INTERVAL="$env_interval_val"
+	else
+		AUTO_REFRESH_INTERVAL="${AUTO_REFRESH_INTERVAL:-60}"
+	fi
+
+	if [ -n "$env_engine_set" ] && [ -n "$env_engine_val" ]; then
+		WARP_ENGINE="$env_engine_val"
+		ENV_WARP_ENGINE_SET="true"
+	else
+		WARP_ENGINE="${WARP_ENGINE:-official}"
+		ENV_WARP_ENGINE_SET=""
+	fi
+	export ENV_WARP_ENGINE_SET
+	export WARP_ENGINE
+
+	if [ -n "$env_family_set" ] && [ -n "$env_family_val" ]; then
+		LIGHTWEIGHT_EGRESS_FAMILY="$env_family_val"
+		ENV_LIGHTWEIGHT_EGRESS_FAMILY_SET="true"
+	else
+		LIGHTWEIGHT_EGRESS_FAMILY="${LIGHTWEIGHT_EGRESS_FAMILY:-ipv6}"
+		ENV_LIGHTWEIGHT_EGRESS_FAMILY_SET=""
+	fi
+	export ENV_LIGHTWEIGHT_EGRESS_FAMILY_SET
+	export LIGHTWEIGHT_EGRESS_FAMILY
+
+	if [ -n "$env_unique_set" ] && [ -n "$env_unique_val" ]; then
+		LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS="$env_unique_val"
+		ENV_LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS_SET="true"
+	else
+		LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS="${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-true}"
+		ENV_LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS_SET=""
+	fi
+	export ENV_LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS_SET
+	export LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS
 
         if [ -n "$env_host_val" ]; then
             PROXY_HOST_OMNIROUTE="$env_host_val"
@@ -321,30 +416,44 @@ init_admin_config() {
             --argjson proxy_base_port "${PROXY_BASE_PORT:-2080}" \
             --argjson proxy_max_rps "${PROXY_MAX_RPS:-50}" \
             --argjson warp_connect_timeout "${WARP_CONNECT_TIMEOUT:-30}" \
-            --argjson auto_refresh_interval "${AUTO_REFRESH_INTERVAL:-60}" \
-            --argjson proxy_auth_enabled "$auth_enabled" \
-            --arg proxy_user "${PROXY_USER:-}" \
-            --arg proxy_password "${PROXY_PASS:-}" \
-            --arg proxy_host_omniroute "${PROXY_HOST_OMNIROUTE:-${PROXY_HOST:-}}" \
-            '{
-              instances: $instances,
+		--argjson auto_refresh_interval "${AUTO_REFRESH_INTERVAL:-60}" \
+		--argjson proxy_auth_enabled "$auth_enabled" \
+		--arg proxy_user "${PROXY_USER:-}" \
+		--arg proxy_password "${PROXY_PASS:-}" \
+		--arg proxy_host_omniroute "${PROXY_HOST_OMNIROUTE:-${PROXY_HOST:-}}" \
+		--arg warp_engine "${WARP_ENGINE:-official}" \
+		--arg lightweight_egress_family "${LIGHTWEIGHT_EGRESS_FAMILY:-ipv6}" \
+		--argjson lightweight_require_unique_egress "${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-true}" \
+		'{
+		  instances: $instances,
               proxy_mode: $proxy_mode,
               proxy_base_port: $proxy_base_port,
               proxy_host_omniroute: $proxy_host_omniroute,
               proxy_max_rps: $proxy_max_rps,
               warp_connect_timeout: $warp_connect_timeout,
               auto_refresh_interval: $auto_refresh_interval,
-              proxy_auth_enabled: $proxy_auth_enabled,
-              proxy_user: $proxy_user,
-              proxy_password: $proxy_password
-            }' | write_file "$ADMIN_CONFIG_FILE"
+		  proxy_auth_enabled: $proxy_auth_enabled,
+		  proxy_user: $proxy_user,
+		  proxy_password: $proxy_password,
+		  warp_engine: $warp_engine,
+		  lightweight_egress_family: $lightweight_egress_family,
+		  lightweight_require_unique_egress: $lightweight_require_unique_egress
+		}' | write_file "$ADMIN_CONFIG_FILE"
         echo "Admin config initialized at ${ADMIN_CONFIG_FILE}"
     fi
 }
 
 validate_runtime_config() {
-    if [ "$PROXY_MODE" != "round-robin" ] && [ "$PROXY_MODE" != "dedicated" ]; then
-        echo "Error: PROXY_MODE must be 'round-robin' or 'dedicated' (got: '${PROXY_MODE}')"
+	if [ "${WARP_ENGINE:-official}" != "official" ] && [ "${WARP_ENGINE:-official}" != "wireproxy" ]; then
+		echo "Error: WARP_ENGINE must be 'official' or 'wireproxy' (got: '${WARP_ENGINE}')"
+		exit 1
+	fi
+	if [ "${LIGHTWEIGHT_EGRESS_FAMILY:-ipv6}" != "ipv6" ] && [ "${LIGHTWEIGHT_EGRESS_FAMILY:-ipv6}" != "ipv4" ] && [ "${LIGHTWEIGHT_EGRESS_FAMILY:-ipv6}" != "auto" ]; then
+		echo "Error: LIGHTWEIGHT_EGRESS_FAMILY must be 'ipv6', 'ipv4', or 'auto' (got: '${LIGHTWEIGHT_EGRESS_FAMILY}')"
+		exit 1
+	fi
+	if [ "$PROXY_MODE" != "round-robin" ] && [ "$PROXY_MODE" != "dedicated" ]; then
+		echo "Error: PROXY_MODE must be 'round-robin' or 'dedicated' (got: '${PROXY_MODE}')"
         exit 1
     fi
 
@@ -398,9 +507,14 @@ write_admin_env_file() {
         printf 'WARP_CONNECT_TIMEOUT=%s\n' "${WARP_CONNECT_TIMEOUT:-30}"
         printf 'AUTO_REFRESH_INTERVAL=%s\n' "${AUTO_REFRESH_INTERVAL:-60}"
         printf 'PROXY_AUTH_ENABLED=%s\n' "${PROXY_AUTH_ENABLED:-false}"
-        printf 'PROXY_USER=%s\n' "${PROXY_USER:-}"
-        printf 'PROXY_HOST_OMNIROUTE=%s\n' "${PROXY_HOST_OMNIROUTE:-}"
-    } > "$WARP_ENV_FILE"
+	printf 'PROXY_USER=%s\n' "${PROXY_USER:-}"
+	printf 'PROXY_HOST_OMNIROUTE=%s\n' "${PROXY_HOST_OMNIROUTE:-}"
+	printf 'WARP_ENGINE=%s\n' "${WARP_ENGINE:-official}"
+	printf 'LIGHTWEIGHT_EGRESS_FAMILY=%s\n' "${LIGHTWEIGHT_EGRESS_FAMILY:-ipv6}"
+	printf 'LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS=%s\n' "${LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS:-true}"
+	printf 'LIGHTWEIGHT_REGISTRATION_DELAY=%s\n' "${LIGHTWEIGHT_REGISTRATION_DELAY:-10}"
+	printf 'LIGHTWEIGHT_EGRESS_CHECK_INTERVAL=%s\n' "${LIGHTWEIGHT_EGRESS_CHECK_INTERVAL:-60}"
+} > "$WARP_ENV_FILE"
 }
 
 gost_auth_block() {

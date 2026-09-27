@@ -18,6 +18,7 @@ LABEL COMMIT_SHA=${COMMIT_SHA}
 
 COPY entrypoint.sh /entrypoint.sh
 COPY start-warp-instance.sh /start-warp-instance.sh
+COPY start-wireproxy-instance.sh /start-wireproxy-instance.sh
 COPY warp-common.sh /warp-common.sh
 COPY watchdog.sh /watchdog.sh
 COPY admin /admin
@@ -50,21 +51,18 @@ RUN if [ -n "${TARGETPLATFORM}" ]; then \
     FILE_NAME="gost_${GOST_VERSION}_linux_${ARCH}.tar.gz" && \
     curl -fLO "https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/${FILE_NAME}" && \
     tar -xzf ${FILE_NAME} -C /usr/bin/ gost && \
-    rm -f ${FILE_NAME} && \
-    chmod +x /usr/bin/gost && \
-    chmod +x /entrypoint.sh && \
-    chmod +x /start-warp-instance.sh && \
-    chmod +x /warp-common.sh && \
-    chmod +x /watchdog.sh && \
-    chmod +x /admin/server.py && \
-    chmod +x /healthcheck/index.sh && \
-    useradd -m -s /bin/bash warp && \
-    echo "warp ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/warp
+    rm -f ${FILE_NAME}     && chmod +x /usr/bin/gost     && WGCF_VERSION="2.2.32"     && if [ "" = "amd64" ]; then         WGCF_SHA256="2ff97f2201972ce582a424455d50a3719a380eef0cd1f3144f7779348e122a2c"         && WIREPROXY_SHA256="e88c1d090740373fc606c1bafd81d9a5eadc642cce5667616e20e9d7a444f51c";     elif [ "" = "arm64" ]; then         WGCF_SHA256="21fe21d9f61db9b381d71200f6f59c7949e0bb455446edcb33dda6ad6a8fcf8f"         && WIREPROXY_SHA256="370e00bd2167960d1ecd1c3c1439715bbaa94a0a110a2040468670c9af6021b6";     fi     && curl -fsSL -o /usr/bin/wgcf "https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VERSION}/wgcf_${WGCF_VERSION}_linux_${ARCH}"     && echo "${WGCF_SHA256}  /usr/bin/wgcf" | sha256sum -c -     && chmod +x /usr/bin/wgcf     && WIREPROXY_VERSION="1.1.3"     && curl -fsSL -o /tmp/wireproxy.tar.gz "https://github.com/pufferffish/wireproxy/releases/download/v${WIREPROXY_VERSION}/wireproxy_linux_${ARCH}.tar.gz"     && echo "${WIREPROXY_SHA256}  /tmp/wireproxy.tar.gz" | sha256sum -c -     && tar -xzf /tmp/wireproxy.tar.gz -C /usr/bin/ wireproxy     && rm -f /tmp/wireproxy.tar.gz     && chmod +x /usr/bin/wireproxy     && chmod +x /entrypoint.sh     && chmod +x /start-warp-instance.sh     && chmod +x /start-wireproxy-instance.sh     && chmod +x /warp-common.sh     && chmod +x /watchdog.sh     && chmod +x /admin/server.py     && chmod +x /healthcheck/index.sh     && useradd -s /bin/bash warp     && echo "warp ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/warp
 
 USER warp
 
 RUN mkdir -p /home/warp/.local/share/warp && \
     echo -n 'yes' > /home/warp/.local/share/warp/accepted-tos.txt
+
+ENV WARP_ENGINE=official
+ENV LIGHTWEIGHT_EGRESS_FAMILY=ipv6
+ENV LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS=true
+ENV LIGHTWEIGHT_REGISTRATION_DELAY=2
+ENV LIGHTWEIGHT_EGRESS_CHECK_INTERVAL=60
 
 ENV WARP_INSTANCES=1
 ENV WARP_CONNECT_TIMEOUT=30

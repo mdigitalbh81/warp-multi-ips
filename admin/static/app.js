@@ -76,8 +76,10 @@ const state = {
 };
 
 const els = {
+  engineName: document.querySelector("#engineName"),
   configuredInstances: document.querySelector("#configuredInstances"),
   healthyInstances: document.querySelector("#healthyInstances"),
+  uniqueEgresses: document.querySelector("#uniqueEgresses"),
   proxyMode: document.querySelector("#proxyMode"),
   basePort: document.querySelector("#basePort"),
   modeNote: document.querySelector("#modeNote"),
@@ -562,6 +564,9 @@ function populateSettings() {
   if (!cfg) return;
   const form = els.settingsForm;
   form.proxy_mode.value = cfg.proxy_mode;
+  if (form.warp_engine) form.warp_engine.value = cfg.warp_engine || "official";
+  if (form.lightweight_egress_family) form.lightweight_egress_family.value = cfg.lightweight_egress_family || "ipv6";
+  if (form.lightweight_require_unique_egress) form.lightweight_require_unique_egress.checked = cfg.lightweight_require_unique_egress !== false;
   if (cfg.max_instances) {
     form.instances.max = String(cfg.max_instances);
   }
@@ -579,9 +584,10 @@ function populateSettings() {
   form.admin_current_password.value = "";
   form.admin_new_password.value = "";
   form.admin_confirm_password.value = "";
-  els.modeHelp.textContent = cfg.proxy_mode === "dedicated"
-    ? "Dedicated mode exposes one SOCKS5 listener per instance and preserves port-to-instance mapping."
-    : "Round Robin mode shares the WARP proxy ports and may alternate connections across instances.";
+  els.modeHelp.textContent =
+    cfg.proxy_mode === "dedicated"
+      ? "Dedicated mode exposes one SOCKS5 listener per instance and preserves port-to-instance mapping."
+      : "Round Robin mode shares WARP proxy ports and alternates connections across instances.";
 }
 
 function setProgress(operation) {
@@ -759,6 +765,9 @@ els.settingsForm.addEventListener("submit", async (event) => {
   const form = els.settingsForm;
   const payload = {
     proxy_mode: form.proxy_mode.value,
+    warp_engine: form.warp_engine ? form.warp_engine.value : "official",
+    lightweight_egress_family: form.lightweight_egress_family ? form.lightweight_egress_family.value : "ipv6",
+    lightweight_require_unique_egress: form.lightweight_require_unique_egress ? form.lightweight_require_unique_egress.checked : true,
     instances: Number(form.instances.value),
     proxy_base_port: Number(form.proxy_base_port.value),
     proxy_host_omniroute: form.proxy_host_omniroute.value.trim(),

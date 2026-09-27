@@ -22,12 +22,20 @@
 
     <section class="metrics" aria-label="Summary">
       <div>
+        <span>Engine</span>
+        <strong id="engineName">-</strong>
+      </div>
+      <div>
         <span>Configured instances</span>
         <strong id="configuredInstances">-</strong>
       </div>
       <div>
         <span>Healthy instances</span>
         <strong id="healthyInstances">-</strong>
+      </div>
+      <div>
+        <span>Unique IPv6</span>
+        <strong id="uniqueEgresses">-</strong>
       </div>
       <div>
         <span>Proxy mode</span>
@@ -44,9 +52,12 @@
         <table>
           <thead>
             <tr>
-              <th>Instance</th>
+            <th>Instance</th>
+            <th><span class="th-tip" title="Engine powering this instance (Official warp-svc or Lightweight wireproxy)">Engine</span></th>
               <th><span class="th-tip" title="IP/hostname that OmniRoute uses to access the SOCKS5 ports">OmniRoute Proxy</span></th>
-              <th><span class="th-tip" title="Public address currently used by Cloudflare WARP for outbound traffic">Current Egress IP</span></th>
+            <th><span class="th-tip" title="Public address currently used by Cloudflare WARP for outbound traffic">Current Egress IP</span></th>
+            <th><span class="th-tip" title="Previous IPv6 egress IP before last change">Previous IPv6</span></th>
+            <th><span class="th-tip" title="Whether this instance has a unique IPv6 egress without collision">Unique</span></th>
               <th>Country</th>
               <th><span class="th-tip" title="Cloudflare colocation/datacenter currently handling this WARP egress. Example: GRU = S&#xe3;o Paulo/Guarulhos.">Colo</span></th>
               <th>Notes</th>
@@ -71,6 +82,21 @@
         </header>
 
         <div class="form-grid">
+          <label>
+            WARP Engine
+            <select name="warp_engine">
+              <option value="official">Official (warp-svc)</option>
+              <option value="wireproxy">Wireproxy (wgcf + wireproxy)</option>
+            </select>
+          </label>
+          <label>
+            Egress Family
+            <select name="lightweight_egress_family">
+              <option value="ipv6">IPv6 (Recommended)</option>
+              <option value="ipv4">IPv4</option>
+              <option value="auto">Auto</option>
+            </select>
+          </label>
           <label>
             Proxy Mode
             <select name="proxy_mode">
@@ -103,6 +129,10 @@
             <input name="auto_refresh_interval" type="number" min="15" max="3600" step="1" required>
           </label>
         </div>
+        <label class="check" style="margin-top: 10px;">
+          <input name="lightweight_require_unique_egress" type="checkbox">
+          Require Unique IPv6 Egress (Wireproxy engine)
+        </label>
 
         <p id="modeHelp" class="help"></p>
 
