@@ -6,7 +6,7 @@ ARG COMMIT_SHA
 ARG TARGETPLATFORM
 
 LABEL org.opencontainers.image.title="Cloudflare WARP"
-LABEL org.opencontainers.image.description="Docker container for Cloudflare WARP client with GOST proxy support"
+LABEL org.opencontainers.image.description="Lightweight Cloudflare WARP proxy using wgcf + wireproxy + GOST"
 LABEL org.opencontainers.image.authors="Ercin Dedeoglu <e.dedeoglu@gmail.com>"
 LABEL org.opencontainers.image.url="https://github.com/ErcinDedeoglu/cloudflare-warp"
 LABEL org.opencontainers.image.source="https://github.com/ErcinDedeoglu/cloudflare-warp"
@@ -39,11 +39,7 @@ RUN if [ -n "${TARGETPLATFORM}" ]; then \
     fi; \
     apt-get update && \
     apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release sudo dbus python3 jq jq jq && \
-    curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends cloudflare-warp && \
+    apt-get install -y --no-install-recommends ca-certificates curl sudo python3 jq && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
     GOST_VERSION=$(curl -s "https://api.github.com/repos/go-gost/gost/releases/latest" | jq -r '.tag_name' | sed 's/^v//') && \
@@ -87,7 +83,7 @@ USER warp
 RUN mkdir -p /home/warp/.local/share/warp && \
     echo -n 'yes' > /home/warp/.local/share/warp/accepted-tos.txt
 
-ENV WARP_ENGINE=official
+ENV WARP_ENGINE=wireproxy
 ENV LIGHTWEIGHT_EGRESS_FAMILY=ipv6
 ENV LIGHTWEIGHT_REQUIRE_UNIQUE_EGRESS=true
 ENV LIGHTWEIGHT_REGISTRATION_DELAY=2
