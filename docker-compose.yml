@@ -24,6 +24,7 @@ services:
       easypanel:
         aliases:
           - omniroute_warp-proxy
+          - omniroute_warp-proxy_undefined
 
 volumes:
   warp-data:
